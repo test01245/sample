@@ -1,0 +1,80 @@
+# cape_integration_monitor.py
+import json
+import time
+import os
+from datetime import datetime
+
+class CapeEnhancedMonitor:
+    def __init__(self):
+        self.cape_data = {
+            "pre_encryption_behavior": [],
+            "encryption_patterns": [],
+            "post_encryption_activity": []
+        }
+    
+    def log_for_cape_correlation(self, activity_type, details):
+        """Log activities that will help correlate with CAPE analysis"""
+        timestamp = datetime.now().isoformat()
+        
+        log_entry = {
+            "timestamp": timestamp,
+            "activity_type": activity_type,
+            "details": details,
+            "cape_correlation_id": f"SIM_{int(time.time())}"
+        }
+        
+        self.cape_data[activity_type].append(log_entry)
+        
+        # Save for later comparison with CAPE report
+        with open("simulation_activities.json", "w") as f:
+            json.dump(self.cape_data, f, indent=2)
+    
+    def monitor_simulation_phases(self, file_simulator):
+        """Monitor specific phases for CAPE correlation"""
+        
+        # Phase 1: Pre-encryption
+        self.log_for_cape_correlation("pre_encryption_behavior", {
+            "action": "test_files_created",
+            "file_count": len(os.listdir(file_simulator.test_directory)),
+            "file_types": [f.split('.')[-1] for f in os.listdir(file_simulator.test_directory)]
+        })
+        
+        # Phase 2: During encryption
+        start_time = time.time()
+        encrypted_files = file_simulator.simulate_encryption()
+        encryption_time = time.time() - start_time
+        
+        self.log_for_cape_correlation("encryption_patterns", {
+            "files_encrypted": len(encrypted_files),
+            "encryption_time_seconds": round(encryption_time, 2),
+            "files_per_second": len(encrypted_files) / encryption_time,
+            "target_directory": file_simulator.test_directory
+        })
+        
+        # Phase 3: Post-encryption
+        self.log_for_cape_correlation("post_encryption_activity", {
+            "action": "ransom_notes_created",
+            "remaining_files": len(os.listdir(file_simulator.test_directory)),
+            "file_extensions": list(set([f.split('.')[-1] for f in os.listdir(file_simulator.test_directory)]))
+        })
+    
+    def generate_cape_comparison_report(self):
+        """Generate report to compare with CAPE analysis"""
+        report = {
+            "simulation_metadata": {
+                "total_activities": sum(len(v) for v in self.cape_data.values()),
+                "simulation_duration": "tracked",
+                "target_environment": "Windows 11 VM"
+            },
+            "expected_cape_findings": [
+                "File encryption activity",
+                "Registry modifications", 
+                "Mass file operations",
+                "Ransom note creation"
+            ]
+        }
+        
+        with open("cape_expected_findings.json", "w") as f:
+            json.dump(report, f, indent=2)
+        
+        return report

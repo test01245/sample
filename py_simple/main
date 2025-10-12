@@ -1,0 +1,25 @@
+# main_simulator_cape.py
+from file_encryption_sim import SafeRansomwareSimulator
+from ransom_note_generator import RansomNoteGenerator
+from cape_integration_monitor import CapeEnhancedMonitor
+
+def main():
+    print("=== CAPE v2 COMPATIBLE SIMULATION ===")
+    
+    # Initialize
+    file_sim = SafeRansomwareSimulator()
+    note_gen = RansomNoteGenerator() 
+    cape_monitor = CapeEnhancedMonitor()
+    
+    # Run simulation with CAPE-focused monitoring
+    cape_monitor.monitor_simulation_phases(file_sim)
+    note_gen.create_ransom_notes()
+    
+    # Generate correlation report
+    report = cape_monitor.generate_cape_comparison_report()
+    print(f"Simulation complete. Expected CAPE findings: {report['expected_cape_findings']}")
+    
+    print("\nNext: Submit this VM snapshot to CAPE v2 and compare results!")
+
+if __name__ == "__main__":
+    main()

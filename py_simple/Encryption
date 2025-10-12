@@ -1,0 +1,82 @@
+# safe_ransomware_simulator.py
+import os
+import time
+from cryptography.fernet import Fernet
+
+class SafeRansomwareSimulator:
+    def __init__(self):
+        self.key = Fernet.generate_key()
+        self.cipher = Fernet(self.key)
+        self.test_directory = "C:\\test_files\\"
+        
+    def create_test_files(self):
+        """Create dummy files for testing"""
+        if not os.path.exists(self.test_directory):
+            os.makedirs(self.test_directory)
+            
+        test_files = {
+            "document.txt": "This is a test document for ransomware analysis.",
+            "data.csv": "id,name,value\n1,test,100\n2,sample,200",
+            "image.jpg": b"fake_jpeg_data" * 100  # dummy binary data
+        }
+        
+        for filename, content in test_files.items():
+            with open(os.path.join(self.test_directory, filename), 'wb' if isinstance(content, bytes) else 'w') as f:
+                f.write(content)
+    
+    def simulate_encryption(self):
+        """Simulate file encryption (safe version)"""
+        encrypted_files = []
+        
+        for filename in os.listdir(self.test_directory):
+            filepath = os.path.join(self.test_directory, filename)
+            
+            if os.path.isfile(filepath):
+                # Read original file
+                with open(filepath, 'rb') as f:
+                    original_data = f.read()
+                
+                # Simulate encryption
+                encrypted_data = self.cipher.encrypt(original_data)
+                
+                # Create encrypted version
+                encrypted_path = filepath + ".encrypted"
+                with open(encrypted_path, 'wb') as f:
+                    f.write(encrypted_data)
+                
+                # Remove original (simulate ransomware behavior)
+                os.remove(filepath)
+                encrypted_files.append(encrypted_path)
+                
+        return encrypted_files
+    
+    def simulate_decryption(self):
+        """Simulate file decryption"""
+        for filename in os.listdir(self.test_directory):
+            if filename.endswith(".encrypted"):
+                filepath = os.path.join(self.test_directory, filename)
+                
+                with open(filepath, 'rb') as f:
+                    encrypted_data = f.read()
+                
+                # Decrypt file
+                try:
+                    decrypted_data = self.cipher.decrypt(encrypted_data)
+                    original_path = filepath.replace(".encrypted", "")
+                    
+                    with open(original_path, 'wb') as f:
+                        f.write(decrypted_data)
+                    
+                    os.remove(filepath)
+                except Exception as e:
+                    print(f"Decryption failed: {e}")
+
+# Usage example
+if __name__ == "__main__":
+    simulator = SafeRansomwareSimulator()
+    simulator.create_test_files()
+    print("Test files created. Simulating encryption...")
+    simulator.simulate_encryption()
+    print("Files encrypted. Simulating decryption...")
+    simulator.simulate_decryption()
+    print("Simulation complete!")
