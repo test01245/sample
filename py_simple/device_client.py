@@ -34,6 +34,8 @@ def main():
     parser = argparse.ArgumentParser(description="Device client for safe simulator")
     parser.add_argument("--backend", dest="backend", default=os.getenv("BACKEND_URL"), help="Backend base URL, e.g. https://app.onrender.com")
     parser.add_argument("--hostname", dest="hostname", default=socket.gethostname(), help="Hostname to report to server")
+    parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification (diagnostics only)")
+    parser.add_argument("--polling", action="store_true", help="Force Socket.IO polling transport (no WebSocket)")
     args = parser.parse_args()
 
     if not args.backend:
@@ -47,19 +49,41 @@ def main():
     simulator = SafeRansomwareSimulator(sandbox_dir)
     print(f"[client] Sandbox directory: {simulator.test_directory}")
 
-    # Register to get a device token and public key
+    # Probe backend status for quick diagnostics
     try:
-        res = requests.post(f"{backend}/publickey", json={"hostname": args.hostname}, timeout=10)
-        res.raise_for_status()
-        data = res.json()
-        device_token = data.get("device_token")
-        ws_url = data.get("ws_url") or backend
-        print(f"[client] Received device token: {device_token}")
-        print("[client] Public key (demo):\n" + (data.get("public_key_pem") or "<none>"))
-        if not device_token:
-            raise RuntimeError("No device_token in response")
+        s = requests.get(f"{backend}/status", timeout=5, verify=not args.insecure)
+        print(f"[client] Backend /status -> {s.status_code}")
     except Exception as e:
-        raise SystemExit(f"Failed to register: {e}")
+        print(f"[client] Backend /status probe failed: {e}")
+
+    # Register to get a device token and public key (with retries)
+    attempts, delay = 3, 2
+    last_err = None
+    for i in range(1, attempts + 1):
+        try:
+            res = requests.post(
+                f"{backend}/publickey",
+                json={"hostname": args.hostname},
+                timeout=25,
+                verify=not args.insecure,
+            )
+            res.raise_for_status()
+            data = res.json()
+            device_token = data.get("device_token")
+            ws_url = data.get("ws_url") or backend
+            print(f"[client] Received device token: {device_token}")
+            print("[client] Public key (demo):\n" + (data.get("public_key_pem") or "<none>"))
+            if not device_token:
+                raise RuntimeError("No device_token in response")
+            break
+        except Exception as e:
+            last_err = e
+            print(f"[client] Register attempt {i}/{attempts} failed: {e}")
+            if i < attempts:
+                time.sleep(delay)
+                delay *= 2
+    if last_err and 'device_token' not in locals():
+        raise SystemExit(f"Failed to register after {attempts} attempts: {last_err}")
 
     # Connect to Socket.IO
     sio = socketio.Client(reconnection=True)
@@ -103,7 +127,8 @@ def main():
     # Socket.IO server URL (use HTTP base; client handles upgrade)
     try:
         print(f"[client] Connecting to {backend} …")
-        sio.connect(backend, transports=["websocket", "polling"], wait_timeout=10)
+        transports = ["polling"] if args.polling else ["websocket", "polling"]
+        sio.connect(backend, transports=transports, wait_timeout=10, ssl_verify=not args.insecure)
     except Exception as e:
         raise SystemExit(f"Failed to connect to Socket.IO: {e}")
 
