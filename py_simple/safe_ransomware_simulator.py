@@ -103,6 +103,4 @@ if __name__ == "__main__":
     sim = SafeRansomwareSimulator()
     print("Encrypting (non-destructive)...")
     sim.simulate_encryption(destructive=False)
-    print("Decrypting...")
-    sim.simulate_decryption()
-    print("Done.")
+    print("Encryption complete. To decrypt, use the backend API (POST /decrypt) or click the Decrypt button in the site.")
