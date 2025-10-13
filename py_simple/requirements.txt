@@ -1,6 +1,10 @@
 flask
 flask-cors
 cryptography
+flask-socketio
+python-socketio
+requests
+eventlet
 
 # Production server
 gunicorn>=20.1.0
