@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python venvs
+venv/
+.venv/
+py_simple/venv/

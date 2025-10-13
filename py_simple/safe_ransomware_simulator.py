@@ -13,7 +13,7 @@ class SafeRansomwareSimulator:
 
     def __init__(self, sandbox_dir: str = None):
         # Default to a clearly sandboxed path instead of a user data folder
-        self.test_directory = sandbox_dir or "C:\\Users\\user\\sim_test\\"
+        self.test_directory = sandbox_dir or "C:\\Users\\user\\test\\"
         # 256-bit AES key
         self._key = AESGCM.generate_key(bit_length=256)
         self._aesgcm = AESGCM(self._key)
