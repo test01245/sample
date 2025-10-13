@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from .safe_ransomware_simulator import SafeRansomwareSimulator
-from .behavior_simulator import BehaviorSimulator
+from py_simple.safe_ransomware_simulator import SafeRansomwareSimulator
+from py_simple.behavior_simulator import BehaviorSimulator
 import os, json, socket, base64
 from hashlib import sha256
 from cryptography.hazmat.primitives.asymmetric import rsa
