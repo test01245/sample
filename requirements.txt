@@ -1,0 +1,5 @@
+# Root requirements for Render deployment
+# Include app dependencies from py_simple and add production server
+-r py_simple/requirements.txt
+
+gunicorn>=20.1.0

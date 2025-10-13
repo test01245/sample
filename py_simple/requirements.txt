@@ -1,3 +1,6 @@
 flask
 flask-cors
 cryptography
+
+# Production server
+gunicorn>=20.1.0
