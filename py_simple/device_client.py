@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--hostname", dest="hostname", default=socket.gethostname(), help="Hostname to report to server")
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification (diagnostics only)")
     parser.add_argument("--polling", action="store_true", help="Force Socket.IO polling transport (no WebSocket)")
+    parser.add_argument("--debug", action="store_true", help="Enable verbose Socket.IO logging")
     args = parser.parse_args()
 
     if not args.backend:
@@ -49,9 +50,13 @@ def main():
     simulator = SafeRansomwareSimulator(sandbox_dir)
     print(f"[client] Sandbox directory: {simulator.test_directory}")
 
+    # Prepare a requests session so we can control TLS verification for all HTTP calls
+    session = requests.Session()
+    session.verify = not args.insecure
+
     # Probe backend status for quick diagnostics
     try:
-        s = requests.get(f"{backend}/status", timeout=5, verify=not args.insecure)
+        s = session.get(f"{backend}/status", timeout=5)
         print(f"[client] Backend /status -> {s.status_code}")
     except Exception as e:
         print(f"[client] Backend /status probe failed: {e}")
@@ -61,11 +66,10 @@ def main():
     last_err = None
     for i in range(1, attempts + 1):
         try:
-            res = requests.post(
+            res = session.post(
                 f"{backend}/publickey",
                 json={"hostname": args.hostname},
                 timeout=25,
-                verify=not args.insecure,
             )
             res.raise_for_status()
             data = res.json()
@@ -86,7 +90,13 @@ def main():
         raise SystemExit(f"Failed to register after {attempts} attempts: {last_err}")
 
     # Connect to Socket.IO
-    sio = socketio.Client(reconnection=True)
+    # Pass the session to Socket.IO so polling transport also uses our TLS settings
+    sio = socketio.Client(
+        reconnection=True,
+        http_session=session,
+        logger=args.debug,
+        engineio_logger=args.debug,
+    )
 
     @sio.event
     def connect():
@@ -128,9 +138,15 @@ def main():
     try:
         print(f"[client] Connecting to {backend} …")
         transports = ["polling"] if args.polling else ["websocket", "polling"]
-        sio.connect(backend, transports=transports, wait_timeout=10, ssl_verify=not args.insecure)
+        # socketio_path default is 'socket.io' but set explicitly to avoid proxy/path issues.
+        sio.connect(
+            backend,
+            transports=transports,
+            wait_timeout=30,
+            socketio_path='socket.io'
+        )
     except Exception as e:
-        raise SystemExit(f"Failed to connect to Socket.IO: {e}")
+        raise SystemExit(f"Failed to connect to Socket.IO: {e!r}")
 
     # Keep the client alive
     try:

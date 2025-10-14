@@ -1,3 +1,16 @@
+"""Flask backend with Socket.IO for the safe simulator.
+
+Important: When running under eventlet (e.g., gunicorn -k eventlet), we must
+monkey-patch BEFORE importing Flask or other network/WSGI modules.
+"""
+
+# Apply eventlet monkey patching early when available (no-op if not installed)
+try:  # pragma: no cover - environment dependent
+    import eventlet  # type: ignore
+    eventlet.monkey_patch()
+except Exception:
+    pass
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
