@@ -22,6 +22,7 @@ import socket
 import time
 import requests
 import socketio  # python-socketio client
+import sys
 
 # Import simulator from local package
 try:
@@ -38,6 +39,15 @@ def main():
     parser.add_argument("--polling", action="store_true", help="Force Socket.IO polling transport (no WebSocket)")
     parser.add_argument("--debug", action="store_true", help="Enable verbose Socket.IO logging")
     args = parser.parse_args()
+
+    # Allow prompting for backend when launched by double-click (set PROMPT_BACKEND=1)
+    if not args.backend and os.getenv("PROMPT_BACKEND") == "1":
+        try:
+            entered = input("Enter backend URL (e.g., https://your-service.onrender.com): ").strip()
+            if entered:
+                args.backend = entered
+        except Exception:
+            pass
 
     if not args.backend:
         raise SystemExit("Please provide --backend or set BACKEND_URL")
@@ -156,6 +166,35 @@ def main():
         print("[client] Exiting…")
         sio.disconnect()
 
+def _run_with_optional_pause():
+    """Run main() and optionally pause on exit when PAUSE_ON_EXIT=1 is set.
+
+    Useful when double-clicking on Windows so the console doesn't close instantly.
+    """
+    pause = os.getenv("PAUSE_ON_EXIT") == "1"
+    try:
+        main()
+    except SystemExit as e:
+        # Print the error and pause if requested; re-raise only when not pausing so exit codes are preserved in CI/terminals
+        msg = str(e) or "Exiting"
+        print(f"[client] {msg}")
+        if pause:
+            try:
+                input("Press Enter to exit…")
+            except Exception:
+                pass
+        else:
+            raise
+    except Exception as e:
+        print(f"[client] Unhandled error: {e}")
+        if pause:
+            try:
+                input("Press Enter to exit…")
+            except Exception:
+                pass
+        else:
+            raise
+
 
 if __name__ == "__main__":
-    main()
+    _run_with_optional_pause()
