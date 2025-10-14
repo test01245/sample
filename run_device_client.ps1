@@ -1,5 +1,5 @@
 param(
-  [string]$BackendUrl = "https://your-service.onrender.com",
+  [string]$BackendUrl = "https://sample-2ang.onrender.com",
   [switch]$Polling = $true,
   [switch]$Debug = $true,
   [switch]$Insecure = $false

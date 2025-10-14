@@ -9,8 +9,8 @@ Defaults:
 - Backend URL: set BACKEND_URL env var or pass --backend
 
 Usage (PowerShell/CMD):
-  pip install -r requirements.txt
-  python py_simple/device_client.py --backend https://<render-app>.onrender.com
+    pip install -r requirements.txt
+    python py_simple/device_client.py --backend https://sample-2ang.onrender.com
 
 This is a safe, reversible demo for research and lab testing.
 """
@@ -33,17 +33,18 @@ except Exception:
 
 def main():
     parser = argparse.ArgumentParser(description="Device client for safe simulator")
-    parser.add_argument("--backend", dest="backend", default=os.getenv("BACKEND_URL"), help="Backend base URL, e.g. https://app.onrender.com")
+    parser.add_argument("--backend", dest="backend", default=os.getenv("BACKEND_URL"), help="Backend base URL, e.g. https://sample-2ang.onrender.com")
     parser.add_argument("--hostname", dest="hostname", default=socket.gethostname(), help="Hostname to report to server")
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification (diagnostics only)")
     parser.add_argument("--polling", action="store_true", help="Force Socket.IO polling transport (no WebSocket)")
     parser.add_argument("--debug", action="store_true", help="Enable verbose Socket.IO logging")
+    parser.add_argument("--recursive", action="store_true", help="Process files in subfolders as well (or set SANDBOX_RECURSIVE=1)")
     args = parser.parse_args()
 
     # Allow prompting for backend when launched by double-click (set PROMPT_BACKEND=1)
     if not args.backend and os.getenv("PROMPT_BACKEND") == "1":
         try:
-            entered = input("Enter backend URL (e.g., https://your-service.onrender.com): ").strip()
+            entered = input("Enter backend URL (e.g., https://sample-2ang.onrender.com): ").strip()
             if entered:
                 args.backend = entered
         except Exception:
@@ -57,8 +58,11 @@ def main():
 
     # Configure sandbox dir (Windows VM path by default)
     sandbox_dir = os.getenv("SANDBOX_DIR") or r"C:\\Users\\user\\test\\"
-    simulator = SafeRansomwareSimulator(sandbox_dir)
+    # Recursive mode: flag or env SANDBOX_RECURSIVE=1
+    recursive = args.recursive or (os.getenv("SANDBOX_RECURSIVE") == "1")
+    simulator = SafeRansomwareSimulator(sandbox_dir, recursive=recursive)
     print(f"[client] Sandbox directory: {simulator.test_directory}")
+    print(f"[client] Recursive mode: {'on' if simulator.recursive else 'off'}")
 
     # Prepare a requests session so we can control TLS verification for all HTTP calls
     session = requests.Session()

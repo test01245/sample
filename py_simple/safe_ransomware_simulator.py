@@ -11,9 +11,12 @@ class SafeRansomwareSimulator:
     Non-destructive by default: creates .encrypted files alongside originals.
     """
 
-    def __init__(self, sandbox_dir: str = None):
+    def __init__(self, sandbox_dir: str = None, recursive: bool | None = None):
         # Default to a clearly sandboxed path instead of a user data folder
         self.test_directory = sandbox_dir or "C:\\Users\\user\\test\\"
+        # Recursion control: default false for safety unless SANDBOX_RECURSIVE=1
+        env_recursive = os.getenv("SANDBOX_RECURSIVE")
+        self.recursive = (recursive if recursive is not None else (env_recursive == "1"))
         # 256-bit AES key
         self._key = AESGCM.generate_key(bit_length=256)
         self._aesgcm = AESGCM(self._key)
@@ -48,27 +51,31 @@ class SafeRansomwareSimulator:
         if destructive:
             os.makedirs(backup_dir, exist_ok=True)
 
-        for filename in os.listdir(self.test_directory):
-            filepath = os.path.join(self.test_directory, filename)
-            if not os.path.isfile(filepath):
-                continue
-            if filepath.endswith(".encrypted"):
-                continue
-
-            with open(filepath, 'rb') as f:
+        def process_file(path: str, rel_name: str):
+            if path.endswith(".encrypted"):
+                return
+            if not os.path.isfile(path):
+                return
+            with open(path, 'rb') as f:
                 original_data = f.read()
-
             encrypted_data = self._encrypt_bytes(original_data)
-
-            encrypted_path = filepath + ".encrypted"
+            encrypted_path = path + ".encrypted"
             with open(encrypted_path, 'wb') as f:
                 f.write(encrypted_data)
-
             if destructive:
-                # Move original to backup to avoid data loss
-                os.replace(filepath, os.path.join(backup_dir, filename))
-
+                os.makedirs(os.path.dirname(os.path.join(backup_dir, rel_name)), exist_ok=True)
+                os.replace(path, os.path.join(backup_dir, rel_name))
             encrypted_files.append(encrypted_path)
+
+        if self.recursive:
+            for root, dirs, files in os.walk(self.test_directory):
+                for fn in files:
+                    rel = os.path.relpath(os.path.join(root, fn), self.test_directory)
+                    process_file(os.path.join(root, fn), rel)
+        else:
+            for filename in os.listdir(self.test_directory):
+                filepath = os.path.join(self.test_directory, filename)
+                process_file(filepath, filename)
 
         return encrypted_files
 
@@ -77,26 +84,29 @@ class SafeRansomwareSimulator:
         if not os.path.exists(self.test_directory):
             return
 
-        for filename in os.listdir(self.test_directory):
-            if not filename.endswith(".encrypted"):
-                continue
-
-            filepath = os.path.join(self.test_directory, filename)
-            if not os.path.isfile(filepath):
-                continue
-
-            with open(filepath, 'rb') as f:
+        def process_enc_file(path: str):
+            if not os.path.isfile(path):
+                return
+            with open(path, 'rb') as f:
                 encrypted_data = f.read()
-
             try:
                 decrypted_data = self._decrypt_bytes(encrypted_data)
-                original_path = filepath[:-10]  # remove .encrypted
+                original_path = path[:-10]  # remove .encrypted
+                os.makedirs(os.path.dirname(original_path), exist_ok=True)
                 with open(original_path, 'wb') as f:
                     f.write(decrypted_data)
-                # Keep encrypted file as artifact; remove if you prefer cleanup
-                # os.remove(filepath)
             except Exception as e:
-                print(f"Decryption failed for {filename}: {e}")
+                print(f"Decryption failed for {os.path.basename(path)}: {e}")
+
+        if self.recursive:
+            for root, dirs, files in os.walk(self.test_directory):
+                for fn in files:
+                    if fn.endswith('.encrypted'):
+                        process_enc_file(os.path.join(root, fn))
+        else:
+            for filename in os.listdir(self.test_directory):
+                if filename.endswith('.encrypted'):
+                    process_enc_file(os.path.join(self.test_directory, filename))
 
 
 if __name__ == "__main__":

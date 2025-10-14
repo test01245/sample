@@ -6,7 +6,7 @@ REM 1) Set your backend URL below or pass as first argument.
 REM 2) Keeps the window open on errors.
 
 if "%~1"=="" (
-  set "BACKEND_URL=https://your-service.onrender.com"
+  set "BACKEND_URL=https://sample-2ang.onrender.com"
 ) else (
   set "BACKEND_URL=%~1"
 )
