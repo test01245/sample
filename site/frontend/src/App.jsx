@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { io } from 'socket.io-client'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api'
@@ -8,10 +9,14 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [hostname, setHostname] = useState('')
   const [deviceInfo, setDeviceInfo] = useState(null)
+  const [devices, setDevices] = useState([])
+  const [selectedToken, setSelectedToken] = useState('')
   const [publicKey, setPublicKey] = useState('')
   const [privateKey, setPrivateKey] = useState('')
   const [adminToken, setAdminToken] = useState('')
   const [serverHost, setServerHost] = useState('')
+  const socketRef = useRef(null)
+  const [socketStatus, setSocketStatus] = useState('disconnected')
 
   useEffect(() => {
     // Load backend status for server hostname display
@@ -25,17 +30,40 @@ function App() {
       }
     }
     fetchStatus()
-    // Also load last recorded device info on first load
-    refreshDeviceInfo()
+  // Also load last recorded device info on first load
+  refreshDeviceInfo()
+  loadDevices()
+
+    // Socket.IO connect (for sending public keys and decrypt triggers)
+    try {
+      const s = io(API_BASE, { path: '/socket.io', transports: ['websocket', 'polling'] })
+      socketRef.current = s
+      s.on('connect', () => setSocketStatus('connected'))
+      s.on('disconnect', () => setSocketStatus('disconnected'))
+      s.on('server_ack', (msg) => {
+        if (msg?.status === 'ok') setStatus('Server acknowledged request')
+      })
+    } catch (_) {
+      // ignore
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const triggerDecrypt = async () => {
     try {
       setLoading(true)
-  const res = await fetch(`${API_BASE}/decrypt`, { method: 'POST' })
-      const data = await res.json()
-      setStatus(data.status || 'Decryption request sent')
+      if (socketRef.current && socketStatus === 'connected') {
+        socketRef.current.emit('site_decrypt', privateKey ? { private_key_pem: privateKey } : {})
+        setStatus('Decrypt request sent via socket')
+      } else {
+        const res = await fetch(`${API_BASE}/decrypt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(privateKey ? { private_key_pem: privateKey } : {}),
+        })
+        const data = await res.json()
+        setStatus(data.status || 'Decryption request sent')
+      }
     } catch (e) {
       setStatus(`Failed to decrypt: ${e}`)
     } finally {
@@ -76,6 +104,51 @@ function App() {
       setStatus('Device info refreshed')
     } catch (e) {
       setStatus(`Failed to load device info: ${e}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadDevices = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/devices`)
+      const data = await res.json()
+      setDevices(data.devices || [])
+      if ((data.devices || []).length && !selectedToken) {
+        setSelectedToken(data.devices[0].token)
+      }
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  const attachPublicKeyToDevice = async () => {
+    if (!selectedToken || !publicKey) {
+      setStatus('Select a device and generate a public key first')
+      return
+    }
+    try {
+      setLoading(true)
+      if (socketRef.current && socketStatus === 'connected') {
+        socketRef.current.emit('site_public_key', { token: selectedToken, public_key_pem: publicKey })
+        setStatus('Public key sent via socket')
+        loadDevices()
+      } else {
+        const res = await fetch(`${API_BASE}/devices/${selectedToken}/public-key`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ public_key_pem: publicKey }),
+        })
+        if (res.ok) {
+          setStatus('Public key attached to device')
+          loadDevices()
+        } else {
+          const data = await res.json()
+          setStatus(`Attach failed: ${data.error || res.status}`)
+        }
+      }
+    } catch (e) {
+      setStatus(`Attach error: ${e}`)
     } finally {
       setLoading(false)
     }
@@ -141,6 +214,18 @@ function App() {
 
           <div className="card-section">
             <h2>Device & Public Key</h2>
+            <div className="muted" style={{marginBottom: 8}}>Socket: {socketStatus}</div>
+            <div className="field">
+              <label>Connected Devices</label>
+              <select className="input" value={selectedToken} onChange={(e) => setSelectedToken(e.target.value)}>
+                {devices.map(d => (
+                  <option key={d.token} value={d.token}>
+                    {d.hostname || d.token.slice(0,8)} • {d.ip || 'ip?'} • {d.connected ? 'online' : 'offline'}
+                  </option>
+                ))}
+              </select>
+              <button className="btn ghost" onClick={loadDevices} style={{marginTop: 8}}>Refresh</button>
+            </div>
             <div className="field">
               <label>Device Hostname (optional)</label>
               <input
@@ -152,7 +237,8 @@ function App() {
               />
             </div>
             <div className="actions">
-              <button className="btn" onClick={requestPublicKey} disabled={loading}>Get Public Key</button>
+              <button className="btn" onClick={requestPublicKey} disabled={loading}>Generate Public Key</button>
+              <button className="btn" onClick={attachPublicKeyToDevice} disabled={loading || !selectedToken || !publicKey}>Attach to Device</button>
               <button className="btn" onClick={refreshDeviceInfo} disabled={loading}>Refresh Device Info</button>
             </div>
 

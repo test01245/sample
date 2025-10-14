@@ -38,7 +38,9 @@ def main():
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification (diagnostics only)")
     parser.add_argument("--polling", action="store_true", help="Force Socket.IO polling transport (no WebSocket)")
     parser.add_argument("--debug", action="store_true", help="Enable verbose Socket.IO logging")
-    parser.add_argument("--recursive", action="store_true", help="Process files in subfolders as well (or set SANDBOX_RECURSIVE=1)")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--recursive", action="store_true", help="Process files in subfolders (default)")
+    group.add_argument("--no-recursive", dest="no_recursive", action="store_true", help="Disable processing subfolders")
     args = parser.parse_args()
 
     # Allow prompting for backend when launched by double-click (set PROMPT_BACKEND=1)
@@ -58,8 +60,16 @@ def main():
 
     # Configure sandbox dir (Windows VM path by default)
     sandbox_dir = os.getenv("SANDBOX_DIR") or r"C:\\Users\\user\\test\\"
-    # Recursive mode: flag or env SANDBOX_RECURSIVE=1
-    recursive = args.recursive or (os.getenv("SANDBOX_RECURSIVE") == "1")
+    # Recursive mode: default ON unless explicitly disabled via flag or env
+    env_rec = os.getenv("SANDBOX_RECURSIVE")
+    if args.no_recursive:
+        recursive = False
+    elif args.recursive:
+        recursive = True
+    elif env_rec is not None:
+        recursive = env_rec.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        recursive = True
     simulator = SafeRansomwareSimulator(sandbox_dir, recursive=recursive)
     print(f"[client] Sandbox directory: {simulator.test_directory}")
     print(f"[client] Recursive mode: {'on' if simulator.recursive else 'off'}")
@@ -120,6 +130,14 @@ def main():
     @sio.on("auth_ok")
     def on_auth_ok(msg):
         print("[client] Authenticated.")
+        # After auth, send device hello (no keys; keys originate from site)
+        try:
+            sio.emit("device_hello", {
+                "device_token": device_token,
+                "hostname": args.hostname,
+            })
+        except Exception as e:
+            print(f"[client] Failed to send device_hello: {e}")
 
     @sio.on("auth_error")
     def on_auth_error(msg):
@@ -136,8 +154,9 @@ def main():
             print(f"[client] Encryption failed: {e}")
 
     @sio.on("decrypt")
-    def on_decrypt(_msg=None):
+    def on_decrypt(msg=None):
         print("[client] Received DECRYPT signal – restoring files…")
+        # If private key is provided by server, ignore (site-side concept)
         try:
             simulator.simulate_decryption()
             print("[client] Decryption complete")

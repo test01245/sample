@@ -14,9 +14,14 @@ class SafeRansomwareSimulator:
     def __init__(self, sandbox_dir: str = None, recursive: bool | None = None):
         # Default to a clearly sandboxed path instead of a user data folder
         self.test_directory = sandbox_dir or "C:\\Users\\user\\test\\"
-        # Recursion control: default false for safety unless SANDBOX_RECURSIVE=1
+        # Recursion control: default ON unless explicitly disabled
         env_recursive = os.getenv("SANDBOX_RECURSIVE")
-        self.recursive = (recursive if recursive is not None else (env_recursive == "1"))
+        if recursive is not None:
+            self.recursive = recursive
+        elif env_recursive is not None:
+            self.recursive = env_recursive.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            self.recursive = True
         # 256-bit AES key
         self._key = AESGCM.generate_key(bit_length=256)
         self._aesgcm = AESGCM(self._key)
