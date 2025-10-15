@@ -11,7 +11,7 @@ try:  # pragma: no cover - environment dependent
 except Exception:
     pass
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 # Support both execution contexts:
@@ -62,6 +62,175 @@ def status_prefixed():
 @app.route('/py_simple/whoami', methods=['GET'])
 def whoami_prefixed():
     return whoami()
+
+@app.route('/py_simple', methods=['GET'])
+def py_simple_ui():
+        """Serve a minimal UI to manage devices and trigger decrypt on the backend host."""
+        html = """
+<!doctype html>
+<html lang=\"en\">
+    <head>
+        <meta charset=\"utf-8\" />
+        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+        <title>py_simple · Device Control</title>
+        <style>
+            :root { --bg:#0f172a; --panel:#0b1222; --muted:#94a3b8; --text:#e2e8f0; --primary:#6366f1; --border:#1f2a44; }
+            html,body { height:100%; } body { margin:0; background:linear-gradient(180deg,#0b1020,#0d1428 40%,#0f172a); color:var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+            .wrap { max-width: 900px; margin: 0 auto; padding: 1.25rem; }
+            .card { background: var(--panel); border:1px solid var(--border); border-radius: 14px; padding: 1rem; box-shadow: 0 6px 20px rgba(0,0,0,.25); margin-top:1rem; }
+            .row { display:flex; gap:.75rem; align-items:center; flex-wrap: wrap; }
+            .label { color:var(--muted); margin-right:.25rem; }
+            .input, select { background:#0a0f1d; color:var(--text); border:1px solid var(--border); border-radius:10px; padding:.5rem .6rem; }
+            .btn { appearance:none; border:1px solid var(--border); background:#1b2140; color:var(--text); padding:.55rem .9rem; border-radius:10px; cursor:pointer; }
+            .btn.primary { border-color:#4f46e5; background:#4f46e5; } .btn.primary:hover { background:#6366f1; }
+            .btn.ghost { background:rgba(255,255,255,.05); }
+            .kv { margin-top:.5rem; } .kv .k { color:var(--muted); margin-right:.5rem; } .kv > div { display:flex; gap:.75rem; padding:.25rem 0; border-bottom:1px dashed rgba(148,163,184,.15); }
+            textarea { width:100%; min-height:130px; background:#0a0f1d; color:var(--text); border:1px solid var(--border); border-radius:10px; padding:.6rem; }
+            .muted { color:var(--muted); }
+        </style>
+    </head>
+    <body>
+        <div class=\"wrap\">
+            <h1>py_simple · Device Control</h1>
+            <p class=\"muted\">Manage connected devices on this backend, view keys, and trigger decryption.</p>
+
+            <div class=\"card\" id=\"whoami\"></div>
+
+            <div class=\"card\">
+                <div class=\"row\">
+                    <span class=\"label\">Devices</span>
+                    <select id=\"deviceSel\"></select>
+                    <button class=\"btn ghost\" id=\"refreshBtn\">Refresh</button>
+                    <button class=\"btn primary\" id=\"decryptBtn\">Decrypt Selected</button>
+                </div>
+                <div id=\"devMeta\" class=\"kv\"></div>
+            </div>
+
+            <div class=\"card\">
+                <div class=\"row\" style=\"justify-content:space-between;\">
+                    <h3 style=\"margin:.25rem 0;\">Keys</h3>
+                    <div>
+                        <button class=\"btn\" id=\"genKeys\">Generate Key Pair</button>
+                        <button class=\"btn\" id=\"attachKeys\">Attach to Device</button>
+                    </div>
+                </div>
+                <div style=\"display:grid; grid-template-columns: 1fr 1fr; gap: .75rem;\">
+                    <div>
+                        <div class=\"label\">Generated Public Key (PEM)</div>
+                        <textarea id=\"pub\" placeholder=\"Generate to populate…\"></textarea>
+                    </div>
+                    <div>
+                        <div class=\"label\">Generated Private Key (PEM)</div>
+                        <textarea id=\"prv\" placeholder=\"Generate to populate…\"></textarea>
+                    </div>
+                </div>
+                <div style=\"display:grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-top:.75rem;\">
+                    <div>
+                        <div class=\"label\">Device Public Key (stored)</div>
+                        <textarea id=\"devPub\" readonly></textarea>
+                    </div>
+                    <div>
+                        <div class=\"label\">Device Private Key (stored)</div>
+                        <textarea id=\"devPrv\" readonly></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class=\"card muted\" id=\"status\">Ready.</div>
+        </div>
+
+        <script>
+            const apiBase = location.origin + '/py_simple';
+            const els = {
+                who: document.getElementById('whoami'), sel: document.getElementById('deviceSel'),
+                meta: document.getElementById('devMeta'), refresh: document.getElementById('refreshBtn'),
+                decrypt: document.getElementById('decryptBtn'), status: document.getElementById('status'),
+                gen: document.getElementById('genKeys'), attach: document.getElementById('attachKeys'),
+                pub: document.getElementById('pub'), prv: document.getElementById('prv'),
+                devPub: document.getElementById('devPub'), devPrv: document.getElementById('devPrv'),
+            };
+
+            function setStatus(msg) { els.status.textContent = msg; }
+
+            async function fetchJSON(url, opts) {
+                const r = await fetch(url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+                let data = null; try { data = await r.json(); } catch (_) {}
+                if (!r.ok) throw new Error((data && (data.message || data.error)) || ('HTTP ' + r.status));
+                return data || {};
+            }
+
+            async function loadWho() {
+                try {
+                    const data = await fetchJSON(apiBase + '/whoami');
+                    els.who.innerHTML = '<div class="kv">\n' +
+                        '<div><span class="k">Your IP</span><span class="v">' + (data.ip||'—') + '</span></div>\n' +
+                        '<div><span class="k">Forwarded-For</span><span class="v">' + (data.forwarded_for||'—') + '</span></div>\n' +
+                        '<div><span class="k">Server</span><span class="v">' + (data.server||'—') + '</span></div>\n' +
+                    '</div>';
+                } catch(e) { els.who.textContent = 'whoami failed: ' + e.message }
+            }
+
+            let devices = [];
+            function currentToken() { return els.sel.value || (devices[0] && devices[0].token) || ''; }
+            function renderDevices() {
+                els.sel.innerHTML = devices.map(d => {
+                    const label = (d.hostname || d.token.slice(0,8)) + ' • ' + (d.ip||'ip?') + ' • ' + (d.connected? 'online':'offline');
+                    return '<option value="' + d.token + '">' + label + '</option>';
+                }).join('');
+                const tok = currentToken();
+                const d = devices.find(x => x.token === tok) || null;
+                els.meta.innerHTML = d ? (
+                    '<div><span class="k">Token</span><span class="v">' + d.token + '</span></div>' +
+                    '<div><span class="k">Hostname</span><span class="v">' + (d.hostname||'—') + '</span></div>' +
+                    '<div><span class="k">IP</span><span class="v">' + (d.ip||'—') + '</span></div>' +
+                    '<div><span class="k">Connected</span><span class="v">' + (d.connected? 'yes':'no') + '</span></div>'
+                ) : '';
+                els.devPub.value = (d && d.public_key_pem) || '';
+                els.devPrv.value = (d && d.private_key_pem) || '';
+            }
+
+            async function loadDevices() {
+                try { const data = await fetchJSON(apiBase + '/devices'); devices = data.devices||[]; renderDevices(); setStatus('Devices loaded'); }
+                catch (e) { setStatus('Failed to load devices: ' + e.message); }
+            }
+
+            async function decryptSelected() {
+                const tok = currentToken(); if (!tok) return setStatus('Select a device first');
+                try { const data = await fetchJSON(apiBase + '/decrypt', { method: 'POST', body: JSON.stringify({ token: tok }) }); setStatus(data.status || 'Decrypt signal sent'); }
+                catch (e) { setStatus('Decrypt failed: ' + e.message); }
+            }
+
+            async function generateKeys() {
+                try {
+                    const data = await fetchJSON(apiBase + '/keys/rsa', { method: 'POST', body: JSON.stringify({}) });
+                    els.pub.value = data.public_key_pem || ''; els.prv.value = data.private_key_pem || '';
+                    setStatus('Generated key pair');
+                } catch (e) { setStatus('Keygen failed: ' + e.message); }
+            }
+
+            async function attachKeys() {
+                const tok = currentToken(); if (!tok) return setStatus('Select a device first');
+                const body = { public_key_pem: els.pub.value || undefined, private_key_pem: els.prv.value || undefined };
+                if (!body.public_key_pem && !body.private_key_pem) return setStatus('Generate keys first');
+                try {
+                    await fetchJSON(apiBase + '/devices/' + tok + '/keys', { method: 'POST', body: JSON.stringify(body) });
+                    await loadDevices(); setStatus('Keys attached to device');
+                } catch (e) { setStatus('Attach failed: ' + e.message); }
+            }
+
+            els.refresh.addEventListener('click', loadDevices);
+            els.decrypt.addEventListener('click', decryptSelected);
+            els.gen.addEventListener('click', generateKeys);
+            els.attach.addEventListener('click', attachKeys);
+            els.sel.addEventListener('change', renderDevices);
+
+            loadWho();
+            loadDevices();
+        </script>
+    </body>
+</html>
+        """
+        return Response(html, mimetype='text/html')
 
 @app.route('/key', methods=['GET'])
 def get_key():
