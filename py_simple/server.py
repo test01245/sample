@@ -23,7 +23,7 @@ try:
 except ImportError:  # pragma: no cover - runtime env dependent
     from safe_ransomware_simulator import SafeRansomwareSimulator
     from behavior_simulator import BehaviorSimulator
-import os, json, socket, base64
+import os, json, socket, base64, sys, subprocess
 from hashlib import sha256
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
@@ -44,6 +44,11 @@ behavior = BehaviorSimulator(simulator.test_directory)
 def status():
     return jsonify({'ok': True, 'hostname': socket.gethostname()})
 
+# --- /py_simple route wrappers for frontend base path ---
+@app.route('/py_simple/status', methods=['GET'])
+def status_prefixed():
+    return status()
+
 @app.route('/key', methods=['GET'])
 def get_key():
     """Return the encryption key"""
@@ -61,6 +66,10 @@ def keys_aes():
     except Exception as e:
         return jsonify({'error': 'aes_keygen_failed', 'message': str(e)}), 500
 
+@app.route('/py_simple/keys/aes', methods=['POST'])
+def keys_aes_prefixed():
+    return keys_aes()
+
 @app.route('/keys/aes/private', methods=['POST'])
 def keys_aes_private():
     admin = os.getenv('ADMIN_TOKEN', 'secretfr')
@@ -73,6 +82,10 @@ def keys_aes_private():
         return jsonify({'algorithm': 'AES-256-GCM', 'key_base64': b64})
     except Exception as e:
         return jsonify({'error': 'aes_keygen_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/keys/aes/private', methods=['POST'])
+def keys_aes_private_prefixed():
+    return keys_aes_private()
 
 @app.route('/keys/rsa', methods=['POST'])
 def keys_rsa():
@@ -107,12 +120,17 @@ def keys_rsa():
         return jsonify({
             'algorithm': 'RSA-2048',
             'public_key_pem': pub_pem,
+            'private_key_pem': prv_pem,
             'public_key_fingerprint_sha256': pub_hash,
             'private_key_fingerprint_sha256': prv_hash,
             'device': record,
         })
     except Exception as e:
         return jsonify({'error': 'rsa_keygen_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/keys/rsa', methods=['POST'])
+def keys_rsa_prefixed():
+    return keys_rsa()
 
 @app.route('/keys/last-request', methods=['GET'])
 def keys_last_request():
@@ -124,6 +142,10 @@ def keys_last_request():
         return jsonify(data)
     except Exception as e:
         return jsonify({'error': 'read_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/keys/last-request', methods=['GET'])
+def keys_last_request_prefixed():
+    return keys_last_request()
 
 @app.route('/keys/rsa/private', methods=['POST'])
 def keys_rsa_private():
@@ -141,6 +163,10 @@ def keys_rsa_private():
         return jsonify({'algorithm': 'RSA-2048', 'private_key_pem': prv_pem})
     except Exception as e:
         return jsonify({'error': 'rsa_keygen_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/keys/rsa/private', methods=['POST'])
+def keys_rsa_private_prefixed():
+    return keys_rsa_private()
 
 @app.route('/publickey', methods=['POST'])
 def publickey_register():
@@ -184,6 +210,10 @@ def publickey_register():
     except Exception as e:
         return jsonify({'error': 'publickey_failed', 'message': str(e)}), 500
 
+@app.route('/py_simple/publickey', methods=['POST'])
+def publickey_register_prefixed():
+    return publickey_register()
+
 @app.route('/encrypt', methods=['POST'])
 def encrypt():
     """Trigger encryption locally on the backend (fallback).
@@ -195,6 +225,10 @@ def encrypt():
     except Exception as e:
         return jsonify({'status': 'Encryption failed', 'error': str(e)}), 500
 
+@app.route('/py_simple/encrypt', methods=['POST'])
+def encrypt_prefixed():
+    return encrypt()
+
 @app.route('/decrypt', methods=['POST'])
 def decrypt():
     """Trigger decryption of files.
@@ -204,7 +238,22 @@ def decrypt():
     try:
         payload = request.get_json(silent=True) or {}
         private_key_pem = payload.get('private_key_pem')
-        # Prefer a broadcast to all connected clients in this process, optionally passing a private key.
+        target_token = payload.get('token')
+        # If a specific device token is provided and connected, emit only to that device
+        if target_token and target_token in DEVICES and DEVICES[target_token].get('sid'):
+            sid = DEVICES[target_token]['sid']
+            # If no private key provided in request, try to use stored device key
+            if not private_key_pem:
+                private_key_pem = DEVICES[target_token].get('private_key_pem')
+            emit_payload = ({'private_key_pem': private_key_pem} if private_key_pem else None)
+            socketio.emit('decrypt', emit_payload, to=sid)
+            # Also attempt local decrypt as a safety net
+            try:
+                simulator.simulate_decryption()
+            except Exception:
+                pass
+            return jsonify({'status': 'Decrypt signal sent to device', 'token': target_token}), 200
+        # Otherwise broadcast to all connected clients in this process, optionally passing a private key.
         emit_payload = ({'private_key_pem': private_key_pem} if private_key_pem else None)
         socketio.emit('decrypt', emit_payload, broadcast=True)
         # Also attempt local decrypt as a safety net (no harm if no local files)
@@ -220,6 +269,10 @@ def decrypt():
     except Exception as e:
         return jsonify({'status': 'Decryption failed', 'error': str(e)}), 500
 
+@app.route('/py_simple/decrypt', methods=['POST'])
+def decrypt_prefixed():
+    return decrypt()
+
 @app.route('/devices', methods=['GET'])
 def devices_state():
     """Inspect connected devices (lab diagnostics)."""
@@ -232,11 +285,16 @@ def devices_state():
                 'ip': info.get('ip'),
                 'hostname': info.get('hostname'),
                 'has_sid': bool(info.get('sid')),
-                'public_key_pem': info.get('public_key_pem')
+                'public_key_pem': info.get('public_key_pem'),
+                'private_key_pem': info.get('private_key_pem')
             })
         return jsonify({'count': len(out), 'devices': out})
     except Exception as e:
         return jsonify({'error': 'inspect_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/devices', methods=['GET'])
+def devices_state_prefixed():
+    return devices_state()
 
 @app.route('/devices/<token>/public-key', methods=['POST'])
 def set_device_public_key(token: str):
@@ -253,35 +311,148 @@ def set_device_public_key(token: str):
     except Exception as e:
         return jsonify({'error': 'set_failed', 'message': str(e)}), 500
 
+@app.route('/py_simple/devices/<token>/public-key', methods=['POST'])
+def set_device_public_key_prefixed(token: str):
+    return set_device_public_key(token)
+
+@app.route('/devices/<token>/keys', methods=['POST'])
+def set_device_keys(token: str):
+    """Attach site-generated public/private keys to a device token (lab/demo)."""
+    try:
+        if token not in DEVICES:
+            return jsonify({'error': 'not_found'}), 404
+        data = request.get_json(silent=True) or {}
+        pub = data.get('public_key_pem')
+        prv = data.get('private_key_pem')
+        if not pub and not prv:
+            return jsonify({'error': 'bad_request', 'message': 'public_key_pem or private_key_pem required'}), 400
+        if pub:
+            DEVICES[token]['public_key_pem'] = pub
+        if prv:
+            DEVICES[token]['private_key_pem'] = prv
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'error': 'set_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/devices/<token>/keys', methods=['POST'])
+def set_device_keys_prefixed(token: str):
+    return set_device_keys(token)
+
 @app.route('/behavior/notes', methods=['POST'])
 def behavior_notes():
     files = behavior.drop_ransom_notes()
     return jsonify({'status': 'ok', 'files': files})
+
+@app.route('/py_simple/behavior/notes', methods=['POST'])
+def behavior_notes_prefixed():
+    return behavior_notes()
 
 @app.route('/behavior/registry', methods=['POST'])
 def behavior_registry():
     result = behavior.simulate_registry_changes()
     return jsonify(result)
 
+@app.route('/py_simple/behavior/registry', methods=['POST'])
+def behavior_registry_prefixed():
+    return behavior_registry()
+
 @app.route('/behavior/registry/cleanup', methods=['POST'])
 def behavior_registry_cleanup():
     result = behavior.cleanup_registry()
     return jsonify(result)
+
+@app.route('/py_simple/behavior/registry/cleanup', methods=['POST'])
+def behavior_registry_cleanup_prefixed():
+    return behavior_registry_cleanup()
 
 @app.route('/behavior/network', methods=['POST'])
 def behavior_network():
     result = behavior.simulate_network_activity()
     return jsonify(result)
 
+@app.route('/py_simple/behavior/network', methods=['POST'])
+def behavior_network_prefixed():
+    return behavior_network()
+
 @app.route('/behavior/discovery', methods=['POST'])
 def behavior_discovery():
     result = behavior.simulate_discovery()
     return jsonify(result)
 
+@app.route('/py_simple/behavior/discovery', methods=['POST'])
+def behavior_discovery_prefixed():
+    return behavior_discovery()
+
 @app.route('/behavior/commands', methods=['POST'])
 def behavior_commands():
     path = behavior.simulate_command_strings()
     return jsonify({'status': 'ok', 'file': path})
+
+@app.route('/py_simple/behavior/commands', methods=['POST'])
+def behavior_commands_prefixed():
+    return behavior_commands()
+
+# --- CAPE agent integration (lab/demo) ---
+@app.route('/cape/report', methods=['POST'])
+def cape_report():
+    """Accept a CAPE agent JSON report and persist it under cape_reports/.
+    Not authenticated for lab simplicity; add token/header checks if exposing.
+    """
+    try:
+        # Optional token auth: set CAPE_TOKEN env in backend to require header
+        expected = os.getenv('CAPE_TOKEN')
+        if expected:
+            provided = request.headers.get('X-CAPE-TOKEN')
+            if provided != expected:
+                return jsonify({'error': 'forbidden'}), 403
+        data = request.get_json(force=True, silent=False)
+        os.makedirs('cape_reports', exist_ok=True)
+        import time, uuid
+        ts = time.strftime('%Y%m%d-%H%M%S')
+        fname = f"report_{ts}_{uuid.uuid4().hex[:8]}.json"
+        fpath = os.path.join('cape_reports', fname)
+        with open(fpath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        # Also update a last.json pointer for convenience
+        with open(os.path.join('cape_reports', 'last.json'), 'w', encoding='utf-8') as f:
+            json.dump({ 'path': fpath, 'created': ts }, f, indent=2)
+        return jsonify({'status': 'ok', 'saved': fpath})
+    except Exception as e:
+        return jsonify({'error': 'persist_failed', 'message': str(e)}), 400
+
+@app.route('/py_simple/cape/report', methods=['POST'])
+def cape_report_prefixed():
+    return cape_report()
+
+# --- Device client process management (lab/demo) ---
+@app.route('/py_simple/device/start', methods=['POST'])
+def start_device_client():
+    """Start the device_client.py as a background process on the server host.
+    Lab-only convenience to demonstrate end-to-end flow. Returns PID on success.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        backend_base = payload.get('backend') or request.host_url.rstrip('/')
+        # Optional args
+        extra_args = []
+        if payload.get('polling'):
+            extra_args.append('--polling')
+        if payload.get('debug'):
+            extra_args.append('--debug')
+        if payload.get('insecure'):
+            extra_args.append('--insecure')
+        # Compute absolute path to device_client.py
+        here = os.path.dirname(os.path.abspath(__file__))
+        client_path = os.path.join(here, 'device_client.py')
+        if not os.path.exists(client_path):
+            return jsonify({'error': 'not_found', 'message': 'device_client.py missing'}), 404
+        cmd = [sys.executable, '-u', client_path, '--backend', backend_base]
+        cmd.extend(extra_args)
+        # Launch detached
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return jsonify({'status': 'started', 'pid': proc.pid})
+    except Exception as e:
+        return jsonify({'error': 'start_failed', 'message': str(e)}), 500
 
 if __name__ == '__main__':
     # For local dev. In production on Render, run with gunicorn -k eventlet ... server:app
@@ -362,11 +533,40 @@ def on_site_public_key(data):
 
 @socketio.on('site_decrypt')
 def on_site_decrypt(data):
-    """Site triggers decrypt broadcast, optionally carrying a private key."""
+    """Site triggers decrypt. If token provided, target that device; else broadcast.
+    Optionally carries a private key; otherwise uses stored key for the device if available.
+    """
     try:
+        token = (data or {}).get('token')
         private_key_pem = (data or {}).get('private_key_pem')
+        if token and token in DEVICES and DEVICES[token].get('sid'):
+            sid = DEVICES[token]['sid']
+            if not private_key_pem:
+                private_key_pem = DEVICES[token].get('private_key_pem')
+            payload = {'private_key_pem': private_key_pem} if private_key_pem else None
+            socketio.emit('decrypt', payload, to=sid)
+            emit('server_ack', {'status': 'ok', 'targeted': True})
+            return
+        # Fallback to broadcast
         payload = {'private_key_pem': private_key_pem} if private_key_pem else None
         socketio.emit('decrypt', payload, broadcast=True)
-        emit('server_ack', {'status': 'ok'})
+        emit('server_ack', {'status': 'ok', 'targeted': False})
     except Exception as e:
         emit('server_ack', {'status': 'error', 'message': str(e)})
+
+@socketio.on('site_keys')
+def on_site_keys(data):
+    """Site sends both public/private keys to associate with a device token."""
+    try:
+        token = (data or {}).get('token')
+        pub = (data or {}).get('public_key_pem')
+        prv = (data or {}).get('private_key_pem')
+        if not token or token not in DEVICES or (not pub and not prv):
+            return emit('server_ack', {'status': 'error'})
+        if pub:
+            DEVICES[token]['public_key_pem'] = pub
+        if prv:
+            DEVICES[token]['private_key_pem'] = prv
+        emit('server_ack', {'status': 'ok'})
+    except Exception:
+        emit('server_ack', {'status': 'error'})
