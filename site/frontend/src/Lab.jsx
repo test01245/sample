@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { initSocket } from './socketClient'
 
-const RAW_API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api'
-const API_BASE = `${RAW_API_BASE.replace(/\/$/, '')}/py_simple`
+const DEFAULT_RAW = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api'
 
-export default function Lab() {
+export default function Lab({ apiBase }) {
+  const API_BASE = (apiBase || `${DEFAULT_RAW.replace(/\/$/, '')}/py_simple`)
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
   const [deviceInfo, setDeviceInfo] = useState(null)

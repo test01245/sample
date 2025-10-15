@@ -44,10 +44,24 @@ behavior = BehaviorSimulator(simulator.test_directory)
 def status():
     return jsonify({'ok': True, 'hostname': socket.gethostname()})
 
+@app.route('/whoami', methods=['GET'])
+def whoami():
+    try:
+        forwarded = request.headers.get('X-Forwarded-For')
+        ip = (forwarded.split(',')[0].strip() if forwarded else request.remote_addr) or ''
+        ua = request.headers.get('User-Agent', '')
+        return jsonify({'ip': ip, 'forwarded_for': forwarded, 'user_agent': ua, 'server': socket.gethostname()})
+    except Exception as e:
+        return jsonify({'error': 'whoami_failed', 'message': str(e)}), 500
+
 # --- /py_simple route wrappers for frontend base path ---
 @app.route('/py_simple/status', methods=['GET'])
 def status_prefixed():
     return status()
+
+@app.route('/py_simple/whoami', methods=['GET'])
+def whoami_prefixed():
+    return whoami()
 
 @app.route('/key', methods=['GET'])
 def get_key():
