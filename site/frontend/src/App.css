@@ -35,6 +35,10 @@ body {
   margin: 0 auto;
   padding: 3rem 1.5rem 2rem;
 }
+.nav { margin-top: 1rem; display: flex; gap: .75rem; }
+.nav-link { color: #c7d2fe; text-decoration: none; border: 1px solid var(--border); padding: .4rem .7rem; border-radius: 999px; }
+.nav-link:hover { background: rgba(255,255,255,.05); }
+.nav-link.active { background: rgba(99,102,241,.2); border-color: #6366f1; }
 .subtitle {
   color: var(--muted);
   margin-top: .25rem;
