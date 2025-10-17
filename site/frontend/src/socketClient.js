@@ -2,7 +2,7 @@ import { io } from 'socket.io-client'
 
 // Initializes a Socket.IO client bound to the /py_simple API base.
 // Optionally asks backend to start a local device client when connecting (lab/demo).
-export function initSocket({ apiBase, onStatus, onAck, startDeviceOnConnect = false }) {
+export function initSocket({ apiBase, onStatus, onAck, onScriptOutput, startDeviceOnConnect = false }) {
   // Derive the server origin so Socket.IO connects at '/socket.io' root path
   let origin = apiBase
   try {
@@ -31,5 +31,6 @@ export function initSocket({ apiBase, onStatus, onAck, startDeviceOnConnect = fa
   })
   s.on('disconnect', () => set('disconnected'))
   s.on('server_ack', (msg) => onAck && onAck(msg))
+  s.on('script_output', (payload) => onScriptOutput && onScriptOutput(payload))
   return s
 }

