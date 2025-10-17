@@ -28,6 +28,11 @@ from hashlib import sha256
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
 from flask import send_from_directory
+# Import supabase_store in both package and local run contexts
+try:
+    from . import supabase_store as sbx
+except Exception:  # pragma: no cover - runtime env dependent
+    import supabase_store as sbx  # type: ignore
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -381,14 +386,22 @@ def keys_rsa():
         except Exception:
             pass
 
-        return jsonify({
+        result = {
             'algorithm': 'RSA-2048',
             'public_key_pem': pub_pem,
             'private_key_pem': prv_pem,
             'public_key_fingerprint_sha256': pub_hash,
             'private_key_fingerprint_sha256': prv_hash,
             'device': record,
-        })
+        }
+        # Optional: persist to Supabase if user_id provided in request
+        try:
+            user_id = (request.get_json(silent=True) or {}).get('user_id')
+            if user_id:
+                sbx.save_user_keys(user_id=user_id, device_token=None, public_key_pem=pub_pem, private_key_pem=prv_pem, extra={'fingerprint_pub': pub_hash, 'fingerprint_prv': prv_hash})
+        except Exception:
+            pass
+        return jsonify(result)
     except Exception as e:
         return jsonify({'error': 'rsa_keygen_failed', 'message': str(e)}), 500
 
@@ -731,9 +744,31 @@ def set_device_keys(token: str):
             DEVICES[token]['public_key_pem'] = pub
         if prv:
             DEVICES[token]['private_key_pem'] = prv
+        # Optional: persist mapping to Supabase when user_id present
+        try:
+            user_id = (data or {}).get('user_id')
+            if user_id and (pub or prv):
+                sbx.save_user_keys(user_id=user_id, device_token=token, public_key_pem=pub, private_key_pem=prv, extra={'action': 'attach'})
+        except Exception:
+            pass
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'error': 'set_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/user/keys', methods=['GET'])
+def list_user_keys():
+    """List stored keys for a given user_id from Supabase.
+
+    Query: user_id=<str>
+    """
+    try:
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'bad_request', 'message': 'user_id required'}), 400
+        items = sbx.list_user_keys(user_id)
+        return jsonify({'items': items})
+    except Exception as e:
+        return jsonify({'error': 'list_failed', 'message': str(e)}), 500
 
 @app.route('/py_simple/devices/<token>/keys', methods=['POST'])
 def set_device_keys_prefixed(token: str):

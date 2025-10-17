@@ -6,6 +6,7 @@ python-socketio
 websocket-client
 requests
 eventlet
+supabase
 
 # Production server
 gunicorn>=20.1.0
