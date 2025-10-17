@@ -10,7 +10,7 @@ export default function Layout() {
           <h1>Developer Hub</h1>
           <p className="subtitle">Learn, simulate, and explore</p>
           <nav className="nav">
-            <Link className={`nav-link ${pathname==='/'?'active':''}`} to="/">Home</Link>
+            <Link className={`nav-link ${pathname==='/'?'active':''}`} to="/">C2</Link>
             <Link className={`nav-link ${pathname.startsWith('/lab')?'active':''}`} to="/lab">Lab</Link>
           </nav>
         </div>
