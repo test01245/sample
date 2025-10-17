@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import Lab from './Lab'
+import C2Browser from './C2Browser'
 
 const DEFAULT_BACKEND = (import.meta.env.VITE_API_BASE || 'http://localhost:8080/api').replace(/\/$/, '')
 
@@ -36,6 +37,7 @@ export default function PySimplePage() {
         )}
       </section>
       <Lab apiBase={apiBase} />
+      <C2Browser apiBase={apiBase} />
     </main>
   )
 }

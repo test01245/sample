@@ -59,7 +59,7 @@ socketio = init_socketio(app, devices_registry=DEVICES, simulator=simulator)
 # --- C2 Files Directory (optional) ---
 # Configure a local directory to list/serve files from this backend. Useful when
 # running the backend on the same host that stores payloads/scripts.
-C2_FILES_DIR = os.getenv('C2_FILES_DIR')  # e.g., /home/hari/Downloads/c2_files
+C2_FILES_DIR = os.getenv('C2_FILES_DIR') or '/home/hari/Downloads/c2_files'  # default for your setup
 C2_TOKEN = os.getenv('C2_TOKEN')  # optional access token to guard file APIs
 
 def _c2_authorized():
