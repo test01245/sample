@@ -267,9 +267,6 @@ export default function FreshUI() {
         <div className="header-right">
           <div className="stat-chip"><span className="dot" style={{background: connectedCount>0?'#10b981':'#ef4444'}}></span>{connectedCount} online</div>
           <div className="stat-chip">Socket: {socketStatus}</div>
-          <div className="host-input">
-            <input value={host} onChange={(e)=>setHost(e.target.value.replace(/\/$/, ''))} placeholder="https://api.example.com" />
-          </div>
           {/* User ID is auto-generated and persisted; no user search box*/}
         </div>
       </header>
@@ -359,8 +356,6 @@ export default function FreshUI() {
               <div className="panel-title">RSA Key Management</div>
               <div className="actions">
                 <button className="btn danger" disabled={loading || !privateKey || !selectedToken} onClick={decryptWithPrivateKey}>Decrypt with Private Key</button>
-                <button className="btn" disabled={!userId || !selectedToken || (!publicKey && !privateKey)} onClick={()=>saveKeysToSupabase({ userId, token: selectedToken, pub: publicKey || null, prv: privateKey || null }).then(()=>setStatus('Saved to Supabase')).catch(e=>setStatus('Save failed: '+e.message))}>Save to Supabase</button>
-                <button className="btn" disabled={!userId || !selectedToken} onClick={async()=>{ try { const rec = await loadKeysFromSupabase({ userId, token: selectedToken }); if (rec) { setPublicKey(rec.public_key_pem || ''); setPrivateKey(rec.private_key_pem || ''); setStatus('Loaded from Supabase') } else { setStatus('No keys found for user/device') } } catch(e){ setStatus('Load failed: '+e.message) } }}>Load from Supabase</button>
               </div>
               <div className="grid two" style={{marginTop:12}}>
                 <div>

@@ -1,6 +1,6 @@
-import FreshUI from './FreshUI'
+import EliteUI from './EliteUI'
 
 export default function App() {
-  // Render only the new fresh UI without the previous routing/UI
-  return <FreshUI />
+  // Render the new elite UI with modern glassmorphism design
+  return <EliteUI />
 }

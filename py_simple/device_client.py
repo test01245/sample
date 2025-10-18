@@ -263,6 +263,18 @@ def main():
                 print("[client] run_script stdout:\n" + result.stdout)
             if result.stderr:
                 print("[client] run_script stderr:\n" + result.stderr)
+            # Emit output back to server for UI
+            try:
+                sio.emit('script_output', {
+                    'device_token': device_token,
+                    'command': cmd,
+                    'returncode': result.returncode,
+                    'stdout': result.stdout,
+                    'stderr': result.stderr,
+                    'ts': int(time.time()),
+                })
+            except Exception as e:
+                print(f"[client] Failed to emit script_output: {e}")
         except Exception as e:
             print(f"[client] run_script failed: {e}")
 

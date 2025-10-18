@@ -162,4 +162,36 @@ def init_socketio(app, devices_registry, simulator) -> SocketIO:
         except Exception as e:
             emit('server_ack', {'status': 'error', 'message': str(e)})
 
+    @socketio.on('script_output')
+    def on_script_output(data):
+        """Receive command execution output from a device and broadcast to all sites.
+
+        Expected payload from device: {
+          device_token, command, returncode, stdout, stderr, ts
+        }
+        """
+        try:
+            token = (data or {}).get('device_token')
+            # If token missing, infer from sid
+            if not token:
+                sid = flask_request.sid
+                for t, info in DEVICES.items():
+                    if info.get('sid') == sid:
+                        token = t
+                        break
+            if token and token in DEVICES:
+                DEVICES[token]['last_output'] = {
+                    'command': (data or {}).get('command'),
+                    'returncode': (data or {}).get('returncode'),
+                    'stdout': (data or {}).get('stdout'),
+                    'stderr': (data or {}).get('stderr'),
+                    'ts': (data or {}).get('ts'),
+                }
+            payload = dict(data or {})
+            if token:
+                payload['device_token'] = token
+            socketio.emit('script_output', payload, broadcast=True)
+        except Exception:
+            pass
+
     return socketio
