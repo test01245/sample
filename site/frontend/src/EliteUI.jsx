@@ -177,7 +177,7 @@ export default function EliteUI() {
     } catch (_) { setFiles([]) }
   }
 
-  async function decryptWithPrivateKey() {
+  async function restoreWithPrivateKey() {
     if (!selectedToken || !privateKey) { setStatus('Select a device and ensure private key is loaded'); return }
     try {
       setLoading(true)
@@ -187,20 +187,20 @@ export default function EliteUI() {
         body: JSON.stringify({ private_key_pem: privateKey }) 
       }).catch(()=>{})
       if (socketRef.current && socketStatus === 'connected') {
-        socketRef.current.emit('site_decrypt', { token: selectedToken })
+        socketRef.current.emit('site_restore', { token: selectedToken })
       } else {
-        await fetch(`${API_BASE}/decrypt`, { 
+        await fetch(`${API_BASE}/restore`, { 
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
           body: JSON.stringify({ token: selectedToken }) 
         })
       }
-      setStatus('✓ Decrypt operation initiated')
+      setStatus('✓ Restore operation initiated')
       if (userId) {
         await saveKeysToSupabase({ userId, token: selectedToken, pub: null, prv: privateKey })
       }
     } catch (e) { 
-      setStatus(`✗ Decrypt failed: ${e}`) 
+      setStatus(`✗ Restore failed: ${e}`) 
     } finally { 
       setLoading(false) 
     }
@@ -657,13 +657,13 @@ export default function EliteUI() {
                     <button 
                       className="elite-btn danger" 
                       disabled={loading || !privateKey || !selectedToken} 
-                      onClick={decryptWithPrivateKey}
+                      onClick={restoreWithPrivateKey}
                     >
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
                         <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
                       </svg>
-                      Decrypt with Private Key
+                      Restore with Private Key
                     </button>
                   </div>
                   <div className="elite-card-body">

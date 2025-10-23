@@ -2,6 +2,8 @@ import os
 import json
 import socket
 import platform
+import ipaddress
+import concurrent.futures
 from datetime import datetime
 
 try:
@@ -143,3 +145,69 @@ class BehaviorSimulator:
             f.write("\n".join(commands) + "\n")
         self._append_indicator("commands", {"file": path, "count": len(commands)})
         return path
+    
+    def scan_network_hosts(self, subnet: str = None, ports: list = None) -> dict:
+        """Scan local network for active hosts on common ports.
+        
+        Args:
+            subnet: CIDR notation (e.g., "192.168.1.0/24"), defaults to local subnet
+            ports: List of ports to scan, defaults to [445, 139, 3389, 22, 80, 443]
+        """
+        if ports is None:
+            ports = [445, 139, 3389, 22, 80, 443]  # SMB, RDP, SSH, HTTP, HTTPS
+        
+        # Get local subnet if not provided
+        if subnet is None:
+            try:
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                # Assume /24 subnet
+                ip_parts = local_ip.split('.')
+                subnet = f"{'.'.join(ip_parts[:3])}.0/24"
+            except Exception:
+                subnet = "192.168.1.0/24"  # fallback
+        
+        scan_results = {"subnet": subnet, "ports_scanned": ports, "hosts_found": []}
+        
+        def scan_host_port(host_ip, port):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.5)
+                    result = s.connect_ex((str(host_ip), port))
+                    if result == 0:
+                        return {"ip": str(host_ip), "port": port, "status": "open"}
+            except Exception:
+                pass
+            return None
+        
+        try:
+            network = ipaddress.ip_network(subnet, strict=False)
+            hosts_to_scan = list(network.hosts())[:50]  # Limit to first 50 hosts
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                futures = []
+                for host in hosts_to_scan:
+                    for port in ports:
+                        futures.append(executor.submit(scan_host_port, host, port))
+                
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    if result:
+                        scan_results["hosts_found"].append(result)
+            
+            scan_results["status"] = "completed"
+            scan_results["total_hosts_scanned"] = len(hosts_to_scan)
+            scan_results["active_targets"] = len(scan_results["hosts_found"])
+            
+        except Exception as e:
+            scan_results["status"] = "error"
+            scan_results["error"] = str(e)
+        
+        # Log scan results
+        scan_log = os.path.join(self.sandbox_dir, "network_scan.json")
+        with open(scan_log, "w", encoding="utf-8") as f:
+            json.dump(scan_results, f, indent=2)
+        
+        self._append_indicator("network_scan", scan_results)
+        return scan_results
+

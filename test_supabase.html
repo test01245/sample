@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supabase Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #0a0f1e;
+            color: #e5ecf6;
+        }
+        .result {
+            margin: 10px 0;
+            padding: 10px;
+            background: #1c2440;
+            border-radius: 5px;
+        }
+        .success { color: #10b981; }
+        .error { color: #ef4444; }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            background: #6366f1;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover { background: #4f46e5; }
+    </style>
+</head>
+<body>
+    <h1>🔧 Supabase Connection Test</h1>
+    <div id="status">Initializing...</div>
+    
+    <h2>Actions:</h2>
+    <button onclick="testConnection()">Test Connection</button>
+    <button onclick="checkTable()">Check Table Exists</button>
+    <button onclick="testInsert()">Test Insert</button>
+    <button onclick="testRead()">Test Read</button>
+    <button onclick="clearTest()">Clear Test Data</button>
+    
+    <div id="results"></div>
+
+    <script type="module">
+        import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
+        
+        const SUPABASE_URL = 'https://mawhbwogynurfbacxnyh.supabase.co'
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1hd2hid29neW51cmZiYWN4bnloIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NDY2MjEsImV4cCI6MjA3NjIyMjYyMX0.KX1MKm74NRMC9Nb1yg4FyDxWFChboD796hFyTz92q_k'
+        
+        let supabase;
+        try {
+            supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+            document.getElementById('status').innerHTML = '<span class="success">✓ Supabase client initialized</span>'
+        } catch (err) {
+            document.getElementById('status').innerHTML = '<span class="error">✗ Failed to initialize: ' + err.message + '</span>'
+        }
+        
+        window.supabase = supabase;
+        
+        function log(msg, isError = false) {
+            const div = document.createElement('div')
+            div.className = 'result ' + (isError ? 'error' : 'success')
+            div.textContent = msg
+            document.getElementById('results').prepend(div)
+        }
+        
+        window.testConnection = async function() {
+            try {
+                const { data, error } = await supabase.from('device_keys').select('count', { count: 'exact', head: true })
+                if (error) throw error
+                log('✓ Connected successfully!')
+            } catch (err) {
+                log('✗ Connection failed: ' + err.message, true)
+            }
+        }
+        
+        window.checkTable = async function() {
+            try {
+                const { count, error } = await supabase.from('device_keys').select('*', { count: 'exact', head: true })
+                if (error) throw error
+                log('✓ Table "device_keys" exists! Current rows: ' + count)
+            } catch (err) {
+                log('✗ Table check failed: ' + err.message + '\n   → You need to create the table in Supabase SQL Editor!', true)
+            }
+        }
+        
+        window.testInsert = async function() {
+            try {
+                const testData = {
+                    user_id: 'test-user-' + Date.now(),
+                    device_token: 'test-device-123',
+                    public_key_pem: '-----BEGIN PUBLIC KEY-----\nTEST\n-----END PUBLIC KEY-----',
+                    private_key_pem: '-----BEGIN PRIVATE KEY-----\nTEST\n-----END PRIVATE KEY-----'
+                }
+                const { data, error } = await supabase.from('device_keys').insert(testData).select()
+                if (error) throw error
+                log('✓ Insert successful! ID: ' + data[0].id)
+            } catch (err) {
+                log('✗ Insert failed: ' + err.message, true)
+            }
+        }
+        
+        window.testRead = async function() {
+            try {
+                const { data, error } = await supabase.from('device_keys').select('*').limit(5)
+                if (error) throw error
+                log('✓ Read successful! Found ' + data.length + ' rows:\n' + JSON.stringify(data, null, 2))
+            } catch (err) {
+                log('✗ Read failed: ' + err.message, true)
+            }
+        }
+        
+        window.clearTest = async function() {
+            try {
+                const { error } = await supabase.from('device_keys').delete().like('user_id', 'test-user-%')
+                if (error) throw error
+                log('✓ Test data cleared!')
+            } catch (err) {
+                log('✗ Clear failed: ' + err.message, true)
+            }
+        }
+    </script>
+</body>
+</html>
