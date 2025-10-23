@@ -43,12 +43,12 @@ DEVICES = {}
 # Simple scripts registry (commands run on the victim VM). Edit via APIs below.
 SCRIPTS = {
     'scriptA': {
-        'label': 'Script A (py_simple device client)',
-        'command': 'python C\\\\Users\\\\user\\\\py_sample\\\\py_simple\\\\device_client.py'
+        'label': 'Script A (agent_sync)',
+        'command': 'python C:\\Users\\user\\py_sample\\py_simple\\agent_sync.py'
     },
     'scriptB': {
         'label': 'Script B (c sample)',
-        'command': 'python C\\\\Users\\\\user\\\\c\\\\device_client.py'
+        'command': 'python C:\\Users\\user\\c\\device_client.py'
     }
 }
 behavior = BehaviorSimulator(processor.work_directory)
