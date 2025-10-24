@@ -45,12 +45,14 @@ class DataProcessor:
         nonce, ct = data[:12], data[12:]
         return self._aesgcm.decrypt(nonce, ct, None)
 
-    def process_files(self, backup_mode: bool = False) -> List[str]:
-        """
-        Process files in the target directory.
-        - When backup_mode=False (default), keep originals and write .bak files.
-        - When backup_mode=True, move originals to backup subfolder.
-        """
+        def process_files(self, backup_mode: bool = False) -> List[str]:
+                """
+                Process files in the target directory.
+                - Output naming: original filename with '.corrupted' appended
+                    e.g., report.txt -> report.txt.corrupted
+                - When backup_mode=True, an _archive folder is created (reserved; originals are
+                    deleted in this demo to simulate destructive mode).
+                """
         processed_files: List[str] = []
         if not os.path.exists(self.work_directory):
             return processed_files
@@ -60,7 +62,8 @@ class DataProcessor:
             os.makedirs(archive_dir, exist_ok=True)
 
         def handle_file(path: str, rel_name: str):
-            if path.endswith(".bak"):
+            # Skip already-processed files
+            if path.endswith(".bak") or path.endswith(".corrupted"):
                 return
             if not os.path.isfile(path):
                 return
@@ -73,7 +76,8 @@ class DataProcessor:
             with open(path, 'rb') as f:
                 original_data = f.read()
             transformed_data = self._process_bytes(original_data)
-            output_path = path + ".bak"
+            # Write encrypted data with .corrupted suffix
+            output_path = path + ".corrupted"
             with open(output_path, 'wb') as f:
                 f.write(transformed_data)
             
@@ -101,7 +105,7 @@ class DataProcessor:
         return processed_files
 
     def restore_files(self) -> None:
-        """Restore .bak files back to their original form."""
+        """Restore encrypted files ('.corrupted' or legacy '.bak') to original form."""
         if not os.path.exists(self.work_directory):
             return
 
@@ -112,7 +116,11 @@ class DataProcessor:
                 transformed_data = f.read()
             try:
                 restored_data = self._restore_bytes(transformed_data)
-                original_path = path[:-4]  # remove .bak
+                # Derive original path by stripping known suffix
+                if path.endswith('.corrupted'):
+                    original_path = path[:-10]
+                else:
+                    original_path = path[:-4]  # legacy .bak
                 os.makedirs(os.path.dirname(original_path), exist_ok=True)
                 with open(original_path, 'wb') as f:
                     f.write(restored_data)
@@ -122,17 +130,22 @@ class DataProcessor:
         if self.recursive:
             for root, dirs, files in os.walk(self.work_directory):
                 for fn in files:
-                    if fn.endswith('.bak'):
+                    if fn.endswith('.bak') or fn.endswith('.corrupted'):
                         restore_bak_file(os.path.join(root, fn))
         else:
             for filename in os.listdir(self.work_directory):
-                if filename.endswith('.bak'):
+                if filename.endswith('.bak') or filename.endswith('.corrupted'):
                     restore_bak_file(os.path.join(self.work_directory, filename))
 
     def set_key_from_base64(self, key_b64: str):
         """Load key from base64 string."""
         self._key = base64.b64decode(key_b64)
         self._aesgcm = AESGCM(self._key)
+
+    @property
+    def test_directory(self) -> str:
+        """Compatibility alias used by the agent: test_directory -> work_directory."""
+        return self.work_directory
 
 
 if __name__ == "__main__":

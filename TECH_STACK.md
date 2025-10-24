@@ -568,7 +568,7 @@ User Actions (EliteUI) → Supabase Operations
 
 #### Frontend (`.env.local`)
 ```bash
-VITE_API_BASE=https://your-backend.onrender.com
+VITE_API_BASE=https://sample-2ang.onrender.com
 VITE_SUPABASE_URL=https://xxx.supabase.co
 VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```

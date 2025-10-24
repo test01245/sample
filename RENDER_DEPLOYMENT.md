@@ -128,7 +128,7 @@ Render automatically provides `$PORT` environment variable. Your code works beca
 Your agent already connects correctly:
 ```python
 # agent_sync.py
-backend = "https://your-app.onrender.com"  # Your Render URL
+backend = "https://sample-2ang.onrender.com"  # Your Render URL
 sio.connect(
     backend,
     transports=["websocket", "polling"],  # Fallback to polling if needed
@@ -148,7 +148,7 @@ const socket = io(VITE_API_BASE, {
 
 Set `.env` in frontend:
 ```bash
-VITE_API_BASE=https://your-backend.onrender.com
+VITE_API_BASE=https://sample-2ang.onrender.com
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your_anon_key
 ```
@@ -161,26 +161,26 @@ After deployment, test these:
 
 ### **1. Backend Health:**
 ```bash
-curl https://your-backend.onrender.com/status
+curl https://sample-2ang.onrender.com/status
 # Should return: {"ok": true, "hostname": "..."}
 ```
 
 ### **2. Socket.IO Endpoint:**
 ```bash
-curl https://your-backend.onrender.com/socket.io/
+curl https://sample-2ang.onrender.com/socket.io/
 # Should return: {"code":0,"message":"Transport unknown"}
 # This is GOOD - means Socket.IO is listening
 ```
 
 ### **3. WebSocket Upgrade (from browser console):**
 ```javascript
-const socket = io('https://your-backend.onrender.com');
+const socket = io('https://sample-2ang.onrender.com');
 socket.on('connect', () => console.log('Connected!'));
 ```
 
 ### **4. Agent Connection:**
 ```bash
-python3 py_simple/agent_sync.py --backend https://your-backend.onrender.com
+python3 py_simple/agent_sync.py --backend https://sample-2ang.onrender.com
 # Should see: [client] Connected to server, authenticating…
 ```
 

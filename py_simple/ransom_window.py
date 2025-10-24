@@ -88,38 +88,79 @@ class RansomWindow:
         self.update_timer()
         
     def load_gif(self):
-        """Download and load the GIF from Tenor."""
-        try:
-            # Tenor GIF URL - using the direct media URL
-            gif_url = "https://media.tenor.com/YDgAmOKt0bMAAAAM/brown-recluse-fella.gif"
-            
-            print("[ransom_window] Downloading GIF...")
-            response = requests.get(gif_url, timeout=10)
-            response.raise_for_status()
-            
-            # Load GIF frames
-            gif_data = BytesIO(response.content)
-            gif = Image.open(gif_data)
-            
-            # Extract all frames
+        """Load the GIF from a local path first, then try network fallbacks."""
+        # 1) Local override via env
+        local_override = os.getenv("LOCAL_GIF_PATH")
+        # 2) Packaged asset path (if present)
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        packaged = os.path.join(assets_dir, "warning.gif")
+        # 3) Remote URLs (try in order)
+        remote_urls = [
+            "https://media.tenor.com/YDgAmOKt0bMAAAAM/brown-recluse-fella.gif",
+            "https://media.giphy.com/media/xT1R9Zs6gttxyPjdVu/giphy.gif",
+        ]
+
+        def _load_from_fp(fp):
+            gif = Image.open(fp)
             try:
                 while True:
-                    # Resize frame to reasonable size
                     frame = gif.copy().resize((400, 400), Image.Resampling.LANCZOS)
                     self.gif_frames.append(ImageTk.PhotoImage(frame))
                     gif.seek(len(self.gif_frames))
             except EOFError:
                 pass
-            
-            print(f"[ransom_window] Loaded {len(self.gif_frames)} frames")
-            
-            if self.gif_frames:
-                self.animate_gif()
-            else:
-                self.gif_label.config(text="[GIF LOADING FAILED]", fg='#ff0000')
-                
+
+        # Try local override
+        try:
+            if local_override and os.path.exists(local_override):
+                print(f"[ransom_window] Loading local GIF: {local_override}")
+                _load_from_fp(local_override)
         except Exception as e:
-            print(f"[ransom_window] Failed to load GIF: {e}")
+            print(f"[ransom_window] Local override failed: {e}")
+
+        # Try packaged asset if nothing loaded yet
+        if not self.gif_frames:
+            try:
+                if os.path.exists(packaged):
+                    print(f"[ransom_window] Loading packaged GIF: {packaged}")
+                    _load_from_fp(packaged)
+            except Exception as e:
+                print(f"[ransom_window] Packaged asset failed: {e}")
+
+        # If no 'warning.gif', try any .gif in assets directory
+        if not self.gif_frames:
+            try:
+                if os.path.isdir(assets_dir):
+                    for name in os.listdir(assets_dir):
+                        if name.lower().endswith('.gif'):
+                            candidate = os.path.join(assets_dir, name)
+                            print(f"[ransom_window] Loading first found GIF: {candidate}")
+                            _load_from_fp(candidate)
+                            break
+            except Exception as e:
+                print(f"[ransom_window] Asset directory scan failed: {e}")
+
+        # Try remote URLs
+        if not self.gif_frames:
+            for url in remote_urls:
+                try:
+                    print(f"[ransom_window] Downloading GIF from {url} …")
+                    headers = {"User-Agent": "Mozilla/5.0 (RansomWindow)"}
+                    response = requests.get(url, headers=headers, timeout=15)
+                    response.raise_for_status()
+                    gif_data = BytesIO(response.content)
+                    _load_from_fp(gif_data)
+                    if self.gif_frames:
+                        break
+                except Exception as e:
+                    print(f"[ransom_window] Failed to fetch {url}: {e}")
+
+        # Finalize or show text fallback
+        if self.gif_frames:
+            print(f"[ransom_window] Loaded {len(self.gif_frames)} frames")
+            self.animate_gif()
+        else:
+            print("[ransom_window] No GIF available; showing text fallback")
             self.gif_label.config(
                 text="⚠️ ENCRYPTION ACTIVE ⚠️",
                 font=('Courier New', 20, 'bold'),

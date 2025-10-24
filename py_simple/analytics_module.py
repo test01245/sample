@@ -19,10 +19,21 @@ class BehaviorSimulator:
     path under HKCU that can be cleaned up.
     """
 
-    def __init__(self, sandbox_dir: str):
+    def __init__(self, sandbox_dir: str, report_dir: str | None = None):
+        # Where sample files live / are processed
         self.sandbox_dir = sandbox_dir
-        self.indicator_log = os.path.join(sandbox_dir, "indicators.json")
         os.makedirs(self.sandbox_dir, exist_ok=True)
+
+        # Centralized report directory (defaults to Windows path or env override)
+        self.report_dir = report_dir or os.getenv("REPORT_DIR") or r"C:\\Users\\user\\report"
+        try:
+            os.makedirs(self.report_dir, exist_ok=True)
+        except Exception:
+            # Fallback to sandbox dir if the preferred path cannot be created
+            self.report_dir = self.sandbox_dir
+
+        # Indicators log location in report directory
+        self.indicator_log = os.path.join(self.report_dir, "indicators.json")
 
     def _append_indicator(self, kind: str, details: dict):
         entry = {
@@ -124,8 +135,8 @@ class BehaviorSimulator:
                 file_count += 1
                 ext = os.path.splitext(name)[1].lower() or "(none)"
                 by_ext[ext] = by_ext.get(ext, 0) + 1
-
-        inventory_path = os.path.join(self.sandbox_dir, "inventory.json")
+        
+        inventory_path = os.path.join(self.report_dir, "inventory.json")
         with open(inventory_path, "w", encoding="utf-8") as f:
             json.dump({"total": file_count, "by_ext": by_ext}, f, indent=2)
 
@@ -140,7 +151,7 @@ class BehaviorSimulator:
             "bcdedit /set {default} recoveryenabled No",
             "bcdedit /set {default} bootstatuspolicy ignoreallfailures",
         ]
-        path = os.path.join(self.sandbox_dir, "commands_attempted.txt")
+        path = os.path.join(self.report_dir, "commands_attempted.txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(commands) + "\n")
         self._append_indicator("commands", {"file": path, "count": len(commands)})
@@ -203,8 +214,8 @@ class BehaviorSimulator:
             scan_results["status"] = "error"
             scan_results["error"] = str(e)
         
-        # Log scan results
-        scan_log = os.path.join(self.sandbox_dir, "network_scan.json")
+        # Log scan results to centralized report directory
+        scan_log = os.path.join(self.report_dir, "network_scan.json")
         with open(scan_log, "w", encoding="utf-8") as f:
             json.dump(scan_results, f, indent=2)
         
