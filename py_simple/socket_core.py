@@ -33,6 +33,17 @@ def init_socketio(app, devices_registry, processor) -> SocketIO:
         token = (data or {}).get('device_token')
         if not token or token not in DEVICES:
             return emit('auth_error', {'error': 'invalid_token'})
+        # If another session was attached to this token, mark it offline
+        try:
+            prev_sid = DEVICES[token].get('sid')
+            if prev_sid and prev_sid != flask_request.sid:
+                # Best effort: tell previous session to disconnect
+                try:
+                    socketio.server.disconnect(prev_sid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         DEVICES[token]['sid'] = flask_request.sid
         DEVICES[token]['connected'] = True
         # Auto-generate an RSA keypair for this device if not already present (lab/demo)

