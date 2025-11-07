@@ -1,0 +1,12 @@
+flask
+flask-cors
+cryptography
+flask-socketio
+python-socketio
+websocket-client
+requests
+eventlet
+Pillow>=10.0.0
+
+# Production server
+gunicorn>=20.1.0

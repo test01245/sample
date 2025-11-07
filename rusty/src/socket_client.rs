@@ -30,11 +30,35 @@ impl SoClient {
             })
             .on("process", move |_payload: Payload, _| {
                 println!("[rusty] Received ENCRYPT signal");
+                // QMP snapshot before encryption (best-effort, ignore errors)
+                if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", 5959)) {
+                    use std::io::{Read, Write};
+                    let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+                    let mut buf = [0u8; 4096]; let _ = s.read(&mut buf); // greeting
+                    let _ = s.write_all(b"{\"execute\":\"qmp_capabilities\"}\n");
+                    let _ = s.read(&mut buf);
+                    let cmd = "{\"execute\":\"savevm\",\"arguments\":{\"name\":\"before_encryption\"}}\n";
+                    let _ = s.write_all(cmd.as_bytes());
+                    let _ = s.read(&mut buf);
+                    println!("[rusty] QMP snapshot 'before_encryption' requested");
+                }
                 if let Ok(mut p) = proc_clone.lock() { let _ = p.process_files(); }
                 Ok(())
             })
             .on("restore", move |_payload: Payload, _| {
                 println!("[rusty] Received RESTORE signal");
+                // QMP snapshot before decryption (best-effort)
+                if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", 5959)) {
+                    use std::io::{Read, Write};
+                    let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+                    let mut buf = [0u8; 4096]; let _ = s.read(&mut buf);
+                    let _ = s.write_all(b"{\"execute\":\"qmp_capabilities\"}\n");
+                    let _ = s.read(&mut buf);
+                    let cmd = "{\"execute\":\"savevm\",\"arguments\":{\"name\":\"before_decryption\"}}\n";
+                    let _ = s.write_all(cmd.as_bytes());
+                    let _ = s.read(&mut buf);
+                    println!("[rusty] QMP snapshot 'before_decryption' requested");
+                }
                 if let Ok(mut p) = processor.lock() { p.restore_files(); }
                 note_clone.stop();
                 Ok(())
