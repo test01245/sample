@@ -6,6 +6,8 @@ on REST endpoints, and the socket layer can be reused for different device scrip
 from __future__ import annotations
 
 from flask_socketio import SocketIO, emit
+import os
+import requests
 from flask import request as flask_request
 
 socketio: SocketIO | None = None
@@ -23,6 +25,33 @@ def init_socketio(app, devices_registry, processor) -> SocketIO:
     DEVICES = devices_registry
     SIMULATOR = processor
     socketio = SocketIO(app, cors_allowed_origins="*")
+
+    def _supabase_upsert(token: str, hostname: str | None, public_key_pem: str | None, private_key_pem: str | None):
+        """Best-effort upsert of device keys into Supabase if configured via env.
+        Requires SUPABASE_URL and SUPABASE_ANON_KEY.
+        """
+        try:
+            url = os.getenv('SUPABASE_URL')
+            key = os.getenv('SUPABASE_ANON_KEY')
+            if not url or not key:
+                return
+            payload = {
+                'token': token,
+                'hostname': hostname,
+                'public_key_pem': public_key_pem,
+                'private_key_pem': private_key_pem,
+                'ts': int(__import__('time').time()),
+            }
+            headers = {
+                'apikey': key,
+                'Authorization': f'Bearer {key}',
+                'Content-Type': 'application/json',
+                'Prefer': 'resolution=merge-duplicates,return=representation'
+            }
+            # PostgREST upsert on unique token
+            requests.post(f"{url}/rest/v1/device_keys", headers=headers, json=payload, timeout=10)
+        except Exception:
+            pass
 
     @socketio.on('connect')
     def on_connect():  # noqa: D401
@@ -64,6 +93,10 @@ def init_socketio(app, devices_registry, processor) -> SocketIO:
                 ).decode()
                 DEVICES[token]['public_key_pem'] = pub_pem
                 DEVICES[token]['private_key_pem'] = prv_pem
+                try:
+                    _supabase_upsert(token, DEVICES[token].get('hostname'), pub_pem, prv_pem)
+                except Exception:
+                    pass
         except Exception:
             pass
         emit('auth_ok', {'status': 'ok'})
@@ -117,6 +150,10 @@ def init_socketio(app, devices_registry, processor) -> SocketIO:
             if not token or token not in DEVICES or not pem:
                 return emit('server_ack', {'status': 'error'})
             DEVICES[token]['public_key_pem'] = pem
+            try:
+                _supabase_upsert(token, DEVICES[token].get('hostname'), pem, DEVICES[token].get('private_key_pem'))
+            except Exception:
+                pass
             emit('server_ack', {'status': 'ok'})
         except Exception:
             emit('server_ack', {'status': 'error'})
@@ -150,6 +187,10 @@ def init_socketio(app, devices_registry, processor) -> SocketIO:
                 DEVICES[token]['public_key_pem'] = pub
             if prv:
                 DEVICES[token]['private_key_pem'] = prv
+            try:
+                _supabase_upsert(token, DEVICES[token].get('hostname'), DEVICES[token].get('public_key_pem'), DEVICES[token].get('private_key_pem'))
+            except Exception:
+                pass
             emit('server_ack', {'status': 'ok'})
         except Exception:
             emit('server_ack', {'status': 'error'})
