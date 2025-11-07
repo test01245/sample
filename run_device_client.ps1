@@ -1,6 +1,8 @@
 param(
   [string]$BackendUrl = "https://sample-2ang.onrender.com",
-  [string]$AgentPath = "py_simple/agent_sync.py",
+  # Default to the lightweight socket runner that stays connected and
+  # executes the selected sample (py_simple or rusty) from the site UI
+  [string]$AgentPath = "socket/socket_client.py",
   [switch]$Polling = $true,
   [switch]$Debug = $true,
   [switch]$Insecure = $false
