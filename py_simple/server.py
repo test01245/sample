@@ -43,8 +43,9 @@ DEVICES = {}
 # Simple scripts registry (commands run on the victim VM). Edit via APIs below.
 SCRIPTS = {
     'scriptA': {
-        'label': 'Script A (agent_sync from Downloads)',
-        'command': 'python "C:\\Users\\user\\Downloads\\sample\\py_simple\\agent_sync.py"'
+        'label': 'Script A (agent_sync from rans-app/rans_sample)',
+        'command': 'python "C:\\Users\\user\\Downloads\\rans-app\\rans_sample\\py_simple\\agent_sync.py"',
+        'cwd': 'C:\\Users\\user\\Downloads\\rans-app\\rans_sample\\py_simple'
     },
     'scriptB': {
         'label': 'Script B (c sample)',
@@ -309,7 +310,7 @@ def py_simple_ui():
                 if (!script || !script.command) return setStatus('Script has no command');
                 try {
                     els.run.disabled = true; els.run.textContent = 'Running…';
-                    await fetchJSON(apiBase + '/device/run', { method: 'POST', body: JSON.stringify({ token: tok, command: script.command }) });
+                    await fetchJSON(apiBase + '/device/run', { method: 'POST', body: JSON.stringify({ token: tok, command: script.command, cwd: script.cwd }) });
                     setStatus('Run command sent');
                 } catch (e) { setStatus('Run failed: ' + e.message); }
                 finally { els.run.disabled = false; els.run.textContent = 'Run'; }
@@ -625,7 +626,7 @@ def scripts_list():
     try:
         out = []
         for sid, meta in SCRIPTS.items():
-            out.append({'id': sid, 'label': meta.get('label'), 'command': meta.get('command')})
+            out.append({'id': sid, 'label': meta.get('label'), 'command': meta.get('command'), 'cwd': meta.get('cwd')})
         return jsonify({'scripts': out})
     except Exception as e:
         return jsonify({'error': 'list_failed', 'message': str(e)}), 500
@@ -638,10 +639,13 @@ def scripts_list_prefixed():
 def scripts_add():
     try:
         data = request.get_json(force=True)
-        sid = data.get('id'); command = data.get('command'); label = data.get('label') or sid
+        sid = data.get('id'); command = data.get('command'); label = data.get('label') or sid; cwd = data.get('cwd')
         if not sid or not command:
             return jsonify({'error': 'bad_request', 'message': 'id and command required'}), 400
-        SCRIPTS[sid] = {'label': label, 'command': command}
+        meta = {'label': label, 'command': command}
+        if isinstance(cwd, str) and cwd:
+            meta['cwd'] = cwd
+        SCRIPTS[sid] = meta
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'error': 'save_failed', 'message': str(e)}), 500
@@ -896,12 +900,16 @@ def device_run():
         payload = request.get_json(force=True)
         token = (payload or {}).get('token')
         command = (payload or {}).get('command')
+        cwd = (payload or {}).get('cwd')
         if not token or not command:
             return jsonify({'error': 'bad_request', 'message': 'token and command required'}), 400
         info = DEVICES.get(token)
         if not info or not info.get('connected') or not info.get('sid'):
             return jsonify({'error': 'offline', 'message': 'device not connected'}), 400
-        socketio.emit('run_script', {'command': command}, to=info['sid'])
+        payload = {'command': command}
+        if isinstance(cwd, str) and cwd:
+            payload['cwd'] = cwd
+        socketio.emit('run_script', payload, to=info['sid'])
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'error': 'run_failed', 'message': str(e)}), 500

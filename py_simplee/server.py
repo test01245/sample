@@ -43,8 +43,9 @@ DEVICES = {}
 # Simple scripts registry (commands run on the victim VM). Edit via APIs below.
 SCRIPTS = {
     'scriptA': {
-        'label': 'Script A (agent_sync from Downloads)',
-        'command': 'python "C:\\Users\\user\\Downloads\\sample\\py_simple\\agent_sync.py"'
+        'label': 'Script A (agent_sync from rans-app/rans_sample)',
+        'command': 'python "C:\\Users\\user\\Downloads\\rans-app\\rans_sample\\py_simple\\agent_sync.py"',
+        'cwd': 'C:\\Users\\user\\Downloads\\rans-app\\rans_sample\\py_simple'
     },
     'scriptB': {
         'label': 'Script B (c sample)',

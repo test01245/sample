@@ -84,7 +84,35 @@ def main():
                     argv[0] = sys.executable
             # Ensure child inherits backend/report env
             extra_env = {'BACKEND_URL': backend, 'REPORT_DIR': os.getenv('REPORT_DIR') or r'C:\\Users\\user\\report'}
-            pid = _spawn_detached(argv, extra_env)
+
+            # Optional working directory in payload
+            cwd = None
+            try:
+                v = (msg or {}).get('cwd')
+                if isinstance(v, str) and v.strip():
+                    cwd = v
+            except Exception:
+                cwd = None
+
+            # When a cwd is provided, create a small trampoline to start in that directory
+            if cwd:
+                try:
+                    env = os.environ.copy(); env.update(extra_env)
+                    popen_kwargs = {'shell': False, 'env': env}
+                    if platform.system() == 'Windows':
+                        CREATE_NEW_PROCESS_GROUP = 0x00000200
+                        DETACHED_PROCESS = 0x00000008
+                        popen_kwargs['creationflags'] = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
+                    else:
+                        popen_kwargs['start_new_session'] = True
+                    popen_kwargs['cwd'] = cwd
+                    proc = subprocess.Popen(argv, **popen_kwargs)
+                    pid = proc.pid
+                except Exception:
+                    # Fallback if cwd fails
+                    pid = _spawn_detached(argv, extra_env)
+            else:
+                pid = _spawn_detached(argv, extra_env)
             print(f"[runner] Launched: {' '.join(argv)} pid={pid}")
             try:
                 sio.emit('script_output', {
