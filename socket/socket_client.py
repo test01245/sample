@@ -77,11 +77,12 @@ def main():
                 argv = shlex.split(cmd, posix=False)
             except Exception:
                 argv = [cmd]
-            # Replace python with current interpreter if present
+            # Ensure we invoke via shell-resolved 'python' instead of absolute interpreter
+            # so logs/UX show `python <script>` as requested.
             if argv:
                 first = argv[0].strip('"').lower()
                 if first in ('python', 'python.exe') or first.endswith('\\python.exe'):
-                    argv[0] = sys.executable
+                    argv[0] = 'python'
             # Ensure child inherits backend/report env
             extra_env = {'BACKEND_URL': backend, 'REPORT_DIR': os.getenv('REPORT_DIR') or r'C:\\Users\\user\\report'}
 
@@ -95,6 +96,7 @@ def main():
                 cwd = None
 
             # When a cwd is provided, create a small trampoline to start in that directory
+            proc = None
             if cwd:
                 try:
                     env = os.environ.copy(); env.update(extra_env)
@@ -127,6 +129,34 @@ def main():
                 })
             except Exception:
                 pass
+
+            # Send a quick follow-up so the UI can see whether it's still running
+            if proc is not None:
+                import threading
+                def _follow_up(p: subprocess.Popen, cmd_argv: list[str]):
+                    try:
+                        time.sleep(4)
+                        rc = p.poll()
+                        payload = {
+                            'device_token': device_token,
+                            'command': ' '.join(cmd_argv),
+                            'pid': p.pid,
+                            'ts': int(time.time()),
+                        }
+                        if rc is None:
+                            payload.update({'running': True})
+                        else:
+                            payload.update({'returncode': rc})
+                        try:
+                            sio.emit('script_output', payload)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                try:
+                    threading.Thread(target=_follow_up, args=(proc, list(argv)), daemon=True).start()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[runner] run_script failed: {e}")
 
