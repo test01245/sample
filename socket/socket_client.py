@@ -96,24 +96,23 @@ def main():
                 cwd = None
 
             # When a cwd is provided, create a small trampoline to start in that directory
+            # Always use Popen so we can emit a follow-up status, adding detachment flags.
             proc = None
-            if cwd:
-                try:
-                    env = os.environ.copy(); env.update(extra_env)
-                    popen_kwargs = {'shell': False, 'env': env}
-                    if platform.system() == 'Windows':
-                        CREATE_NEW_PROCESS_GROUP = 0x00000200
-                        DETACHED_PROCESS = 0x00000008
-                        popen_kwargs['creationflags'] = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
-                    else:
-                        popen_kwargs['start_new_session'] = True
+            try:
+                env = os.environ.copy(); env.update(extra_env)
+                popen_kwargs = {'shell': False, 'env': env}
+                if platform.system() == 'Windows':
+                    CREATE_NEW_PROCESS_GROUP = 0x00000200
+                    DETACHED_PROCESS = 0x00000008
+                    popen_kwargs['creationflags'] = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
+                else:
+                    popen_kwargs['start_new_session'] = True
+                if isinstance(cwd, str) and cwd.strip():
                     popen_kwargs['cwd'] = cwd
-                    proc = subprocess.Popen(argv, **popen_kwargs)
-                    pid = proc.pid
-                except Exception:
-                    # Fallback if cwd fails
-                    pid = _spawn_detached(argv, extra_env)
-            else:
+                proc = subprocess.Popen(argv, **popen_kwargs)
+                pid = proc.pid
+            except Exception:
+                # Fallback to a simpler detached spawn if anything above fails
                 pid = _spawn_detached(argv, extra_env)
             print(f"[runner] Launched: {' '.join(argv)} pid={pid}")
             try:

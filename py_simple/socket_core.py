@@ -204,12 +204,16 @@ def init_socketio(app, devices_registry, processor) -> SocketIO:
         try:
             token = (data or {}).get('token')
             command = (data or {}).get('command')
+            cwd = (data or {}).get('cwd')
             if not token or not command:
                 return emit('server_ack', {'status': 'error', 'message': 'token and command required'})
             if token not in DEVICES or not DEVICES[token].get('sid'):
                 return emit('server_ack', {'status': 'error', 'message': 'device offline'})
             sid = DEVICES[token]['sid']
-            socketio.emit('run_script', {'command': command}, to=sid)
+            payload = {'command': command}
+            if isinstance(cwd, str) and cwd:
+                payload['cwd'] = cwd
+            socketio.emit('run_script', payload, to=sid)
             emit('server_ack', {'status': 'ok'})
         except Exception as e:
             emit('server_ack', {'status': 'error', 'message': str(e)})
